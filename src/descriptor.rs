@@ -3,8 +3,9 @@ pub use mscript_12_0 as miniscript;
 #[cfg(feature = "miniscript_12_3_5")]
 pub use mscript_12_3_5 as miniscript;
 
-use std::collections::{BTreeSet, HashSet};
-use std::str::FromStr;
+extern crate alloc;
+
+use alloc::{collections::BTreeSet, str::FromStr, vec::Vec};
 
 use miniscript::{
     bitcoin::{self, bip32::DerivationPath, secp256k1},
@@ -70,8 +71,8 @@ pub fn descr_to_dpks(
 pub fn dpks_to_derivation_keys_paths(
     dpks: &Vec<DescriptorPublicKey>,
 ) -> (Vec<secp256k1::PublicKey>, Vec<DerivationPath>) {
-    let mut derivation_paths = HashSet::new();
-    let mut keys = HashSet::new();
+    let mut derivation_paths = BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for k in dpks {
         keys.insert(dpk_to_pk(k));
         if let Some(path) = dpk_to_deriv_path(k) {
@@ -86,7 +87,7 @@ pub fn dpks_to_derivation_keys_paths(
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use std::str::FromStr;
+    use alloc::{str::FromStr, vec};
 
     use miniscript::{
         bitcoin::bip32::{self, ChainCode, ChildNumber, Fingerprint},

@@ -1,4 +1,8 @@
-use std::str::FromStr;
+#![no_std]
+use crate::alloc::string::ToString;
+extern crate alloc;
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use core::str::FromStr;
 
 use descriptor::descr_to_dpks;
 
@@ -174,7 +178,7 @@ impl EncryptedBackup {
         self.keys.append(&mut payload.keys()?);
         Ok(self)
     }
-    pub fn encrypt(self) -> Result<Vec<u8>, Error> {
+    pub fn encrypt(self, #[cfg(not(feature = "rand"))] nonce: [u8; 12]) -> Result<Vec<u8>, Error> {
         if self.content == Content::Unknown {
             return Err(Error::UnknownContent);
         }
@@ -196,6 +200,8 @@ impl EncryptedBackup {
                 self.content.clone(),
                 self.keys,
                 &bytes,
+                #[cfg(not(feature = "rand"))]
+                nonce,
             )?),
             _ => Err(Error::NotImplemented),
         }

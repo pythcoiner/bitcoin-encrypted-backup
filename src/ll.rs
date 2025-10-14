@@ -3,7 +3,9 @@ pub use mscript_12_0 as miniscript;
 #[cfg(feature = "miniscript_12_3_5")]
 pub use mscript_12_3_5 as miniscript;
 
-use std::collections::BTreeSet;
+extern crate alloc;
+use alloc::collections::BTreeSet;
+use alloc::{vec, vec::Vec};
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -15,6 +17,7 @@ use miniscript::bitcoin::{
     hashes::{sha256, Hash, HashEngine},
     secp256k1, VarInt,
 };
+#[cfg(feature = "rand")]
 use rand::{rngs::OsRng, TryRngCore};
 
 use crate::{descriptor::bip341_nums, Encryption, Version};
@@ -135,6 +138,7 @@ pub fn xor(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     out
 }
 
+#[cfg(feature = "rand")]
 pub fn nonce() -> [u8; 12] {
     let mut rng = OsRng;
     let mut nonce = [0u8; 12];
@@ -167,9 +171,12 @@ pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u8; 
 pub fn inner_encrypt(
     secret: sha256::Hash,
     mut data: Vec<u8>,
+    #[cfg(not(feature = "rand"))] nonce: [u8; 12],
 ) -> Result<([u8; 12], Vec<u8>), Error> {
+    #[cfg(feature = "rand")]
     let nonce = nonce();
 
+    #[allow(deprecated)]
     let key = Key::<Aes256Gcm>::from_slice(secret.as_byte_array());
     let cipher = Aes256Gcm::new(key);
 
@@ -362,6 +369,7 @@ pub fn encrypt_aes_gcm_256_v1(
     content_metadata: Content,
     keys: Vec<secp256k1::PublicKey>,
     data: &[u8],
+    #[cfg(not(feature = "rand"))] nonce: [u8; 12],
 ) -> Result<Vec<u8>, Error> {
     // drop duplicates keys and sort out bip341 nums
     let keys = keys
@@ -410,7 +418,12 @@ pub fn encrypt_aes_gcm_256_v1(
     let mut payload = content_metadata;
     payload.append(&mut data.to_vec());
 
-    let (nonce, cyphertext) = inner_encrypt(secret, payload.to_vec())?;
+    let (nonce, cyphertext) = inner_encrypt(
+        secret,
+        payload.to_vec(),
+        #[cfg(not(feature = "rand"))]
+        nonce,
+    )?;
     let encrypted_payload = encode_encrypted_payload(nonce, cyphertext.as_slice())?;
 
     Ok(encode_v1(
@@ -429,6 +442,7 @@ pub fn try_decrypt_aes_gcm_256(
 ) -> Option<Vec<u8>> {
     let nonce = Nonce::from(nonce);
 
+    #[allow(deprecated)]
     let key = Key::<Aes256Gcm>::from_slice(secret);
     let cipher = Aes256Gcm::new(key);
 
@@ -599,12 +613,12 @@ pub fn parse_encrypted_payload(
 
 #[cfg(test)]
 mod tests {
-    use aes_gcm::aead::{rand_core::RngCore, OsRng};
+    use alloc::string::{String, ToString};
+    use core::str::FromStr;
     use miniscript::bitcoin::XOnlyPublicKey;
     use rand::random;
 
     use super::*;
-    use std::str::FromStr;
 
     fn pk1() -> secp256k1::PublicKey {
         secp256k1::PublicKey::from_str(
@@ -967,7 +981,7 @@ mod tests {
         let mut rng = OsRng;
         for _ in 0..256 {
             let mut secret = [0u8; 32];
-            rng.fill_bytes(&mut secret);
+            rng.try_fill_bytes(&mut secret).unwrap();
             secrets.push(secret);
         }
         let res = encode_individual_secrets(&secrets);
