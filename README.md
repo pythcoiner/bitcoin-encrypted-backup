@@ -88,6 +88,18 @@ let descriptor = EncryptedBackup::new()
     .unwrap();
 ```
 
+## WASM support
+
+This carate can be build against these wasm targets:
+ - `wasm32-unknown-unknown`
+ - `wasm32-wasip1`
+
+Note: `rand` feature must be disabled for these target:
+
+```
+cargo build --target wasm32-unknown-unknown --no-default-features --features "miniscript_latest"
+```
+
 ## Features
 
 | Feature flag        | Default | Description                                           |
@@ -97,7 +109,7 @@ let descriptor = EncryptedBackup::new()
 | `miniscript_latest` | ✓       | Alias for `miniscript_12_3_5`                         |
 | `devices`           | -       | Enable automatic enumeration of signing devices.      |
 | `tokio`             | ✓       | Pull in `tokio` runtime used by the `devices`feature. |
-
+| `rand`              | ✓       | Enable random nonce generation                        |
 
 Note: the `devices` feature uses
 [`async-hwi`](https://github.com/wizardsardine/async-hwi) crate, see
