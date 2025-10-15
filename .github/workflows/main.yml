@@ -1,0 +1,84 @@
+name: CI
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.85.0
+          components: rustfmt, clippy
+          override: true
+      - name: rustfmt
+        run: cargo fmt -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  tests:
+    needs: linter
+    strategy:
+      matrix:
+        toolchain:
+          - 1.76
+          - nightly
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+          profile: minimal
+      - name: tests
+        run: cargo test --verbose --color always -- --nocapture
+  build:
+    needs: tests
+    strategy:
+      matrix:
+        toolchain:
+          - 1.76
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+          profile: minimal
+      - name: build
+        run: cargo build --release --features "cli miniscript_latest" 
+      - name: build
+        run: cargo build --release --no-default-features --features "miniscript_12_0" 
+  build_wasm:
+    needs: tests
+    strategy:
+      matrix:
+        toolchain:
+          - 1.82
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+          profile: minimal
+      - name: build
+        run: rustup target add wasm32-unknown-unknown && rustup target add wasm32-wasip1 && cargo build --target wasm32-unknown-unknown --no-default-features --features "miniscript_latest"
