@@ -611,7 +611,7 @@ pub fn parse_encrypted_payload(
     Ok((nonce, cyphertext))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rand"))]
 mod tests {
     use alloc::string::{String, ToString};
     use core::str::FromStr;

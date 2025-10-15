@@ -330,7 +330,7 @@ impl From<ll::Error> for Error {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rand"))]
 mod tests {
     use miniscript::bitcoin;
 

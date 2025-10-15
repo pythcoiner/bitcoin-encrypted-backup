@@ -84,7 +84,7 @@ pub fn dpks_to_derivation_keys_paths(
     (keys, deriv)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rand"))]
 pub mod tests {
     use super::*;
     use alloc::{str::FromStr, vec};
