@@ -1,7 +1,7 @@
 #![no_main]
 
-extern crate encrypted_backup;
-use encrypted_backup::{
+extern crate bitcoin_encrypted_backup;
+use bitcoin_encrypted_backup::{
     Content, Encryption, Version,
     ll::{
         decode_v1, encode_derivation_paths, encode_encrypted_payload, encode_individual_secrets,

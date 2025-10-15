@@ -6,10 +6,8 @@ pub use mscript_12_3_5 as miniscript;
 use clap::Parser;
 use clap::Subcommand;
 
-use bitcoin_encrypted_backup as encrypted_backup;
-
-use encrypted_backup::Decrypted;
-use encrypted_backup::EncryptedBackup;
+use bitcoin_encrypted_backup::Decrypted;
+use bitcoin_encrypted_backup::EncryptedBackup;
 use miniscript::descriptor::DescriptorKeyParseError;
 use miniscript::Descriptor;
 use miniscript::DescriptorPublicKey;
@@ -38,8 +36,8 @@ pub enum CliError {
     OpenError(std::io::Error),
     WriteError(std::io::Error),
     ReadError(std::io::Error),
-    FailedToEncrypt(encrypted_backup::Error),
-    FailedToDecrypt(encrypted_backup::Error),
+    FailedToEncrypt(bitcoin_encrypted_backup::Error),
+    FailedToDecrypt(bitcoin_encrypted_backup::Error),
     Content,
     NoKeys,
 }
@@ -201,7 +199,7 @@ async fn main() -> Result<(), CliError> {
             #[cfg(feature = "devices")]
             let mut keys = {
                 let deriv_paths = backup.get_derivation_paths();
-                encrypted_backup::signing_devices::collect_xpubs(deriv_paths).await
+                bitcoin_encrypted_backup::signing_devices::collect_xpubs(deriv_paths).await
             };
 
             #[cfg(not(feature = "devices"))]
@@ -215,7 +213,8 @@ async fn main() -> Result<(), CliError> {
                 return Err(CliError::NoKeys);
             }
 
-            let (pks, _) = encrypted_backup::descriptor::dpks_to_derivation_keys_paths(&keys);
+            let (pks, _) =
+                bitcoin_encrypted_backup::descriptor::dpks_to_derivation_keys_paths(&keys);
 
             let decrypted = backup
                 .set_keys(pks)

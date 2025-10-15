@@ -6,7 +6,7 @@ readme = "README.md"
 description = "Bitcoin Encrypted Backup"
 documentation = "https://docs.rs/bitcoin-encrypted-backup"
 license-file = "LICENSE"
-repository = "https://github.com/pythcoiner/encrypted_backup"
+repository = "https://github.com/pythcoiner/bitcoin-encrypted-backup"
 
 [dependencies]
 aes-gcm = {version = "0.10.3", default-features = false, features = ["aes", "alloc"]}

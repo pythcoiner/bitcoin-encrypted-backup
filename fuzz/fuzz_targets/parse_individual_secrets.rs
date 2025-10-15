@@ -1,6 +1,6 @@
 #![no_main]
 
-use encrypted_backup::ll::parse_individual_secrets;
+use bitcoin_encrypted_backup::ll::parse_individual_secrets;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
