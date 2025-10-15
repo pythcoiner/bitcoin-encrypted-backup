@@ -39,6 +39,7 @@ clean:
     rm -fRd encrypted_backup.profdata
     rm -fRd coverage
     rm -fRd *.profraw
+    rm -fRd Cargo.lock
 
 test:
     cargo test --features "rand" -- --nocapture
