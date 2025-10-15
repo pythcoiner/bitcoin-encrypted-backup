@@ -105,6 +105,9 @@ pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
         0 => Ok((1, Content::None)),
         1 => Err(Error::ContentMetadata),
         2 => {
+            if bytes.len() < 3 {
+                return Err(Error::ContentMetadata);
+            }
             let bip_number = u16::from_be_bytes(bytes[1..3].try_into().expect("len ok"));
             match bip_number {
                 380 => Ok((3, Content::Bip380)),
@@ -114,7 +117,7 @@ pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
             }
         }
         len => {
-            let end = (len + 1) as usize;
+            let end = (len as usize + 1).min(bytes.len());
             let data = &bytes[1..end].to_vec();
             Ok((end, Content::Proprietary(data.to_vec())))
         }
