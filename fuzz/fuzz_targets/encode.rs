@@ -5,9 +5,9 @@ use bitcoin_encrypted_backup::{
     Content, Encryption, Version,
     ll::{
         decode_v1, encode_derivation_paths, encode_encrypted_payload, encode_individual_secrets,
-        encode_v1, increment_offset, nonce, parse_derivation_paths, parse_individual_secrets,
+        encode_v1, increment_offset, nonce, parse_content_metadata, parse_derivation_paths,
+        parse_individual_secrets,
     },
-    miniscript::bitcoin::bip32::DerivationPath,
 };
 
 use libfuzzer_sys::fuzz_target;
@@ -23,7 +23,7 @@ fn content(bytes: &[u8]) -> (usize, Content) {
     if bytes.is_empty() {
         return (1, Content::Unknown);
     }
-    (1, Content::from(bytes[0]))
+    parse_content_metadata(bytes).unwrap_or((1, Content::Unknown))
 }
 fn encryption(bytes: &[u8]) -> (usize, Encryption) {
     if bytes.is_empty() {
@@ -52,14 +52,14 @@ fuzz_target!(|bytes: &[u8]| {
     } else {
         return;
     };
-    let (incr, content) = content(&bytes[offset..]);
+    let (incr, _content) = content(&bytes[offset..]);
     offset = if let Ok(o) = increment_offset(bytes, offset, incr) {
         o
     } else {
         return;
     };
     let (incr, encryption) = encryption(&bytes[offset..]);
-    offset = if let Ok(o) = increment_offset(bytes, offset, incr) {
+    let _offset = if let Ok(o) = increment_offset(bytes, offset, incr) {
         o
     } else {
         return;
@@ -74,16 +74,7 @@ fuzz_target!(|bytes: &[u8]| {
 
     let payload = encode_encrypted_payload(nonce(), "0".as_bytes()).unwrap();
 
-    let bytes = encode_v1(
-        version.into(),
-        deriv,
-        secrets,
-        content.into(),
-        encryption.into(),
-        payload,
-    );
-
-    // println!("encoded: {bytes:?}");
+    let bytes = encode_v1(version.into(), deriv, secrets, encryption.into(), payload);
 
     let _ = decode_v1(&bytes).unwrap();
 });
