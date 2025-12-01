@@ -50,6 +50,7 @@ pub enum Error {
     EmptyBytes,
     Increment,
     ContentMetadataEmpty,
+    ContentReserved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +117,7 @@ pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
                 bip_number => Ok((3, Content::BIP(bip_number))),
             }
         }
+        255 => Err(Error::ContentReserved),
         len => {
             if bytes.len() < (len as usize + 1) {
                 return Err(Error::ContentMetadata);
@@ -822,7 +824,7 @@ mod tests {
 
         // Edge case: LENGTH=255 (reserved) but even if it weren't, insufficient bytes
         let result = parse_content_metadata(&[255, 0xAA]);
-        assert_eq!(result, Err(Error::ContentMetadata));
+        assert_eq!(result, Err(Error::ContentReserved));
     }
 
     #[test]
@@ -836,6 +838,28 @@ mod tests {
         let (offset, content) = parse_content_metadata(&[2, 0x01, 0x7C]).unwrap();
         assert_eq!(offset, 3);
         assert_eq!(content, Content::Bip380);
+    }
+
+    #[test]
+    fn test_parse_content_metadata_reserved_0xff() {
+        // LENGTH=0xFF is reserved and should be rejected
+        let mut bytes = vec![0xFF];
+        // Add 255 bytes of data (what 0xFF would indicate if it were valid)
+        bytes.extend(vec![0xAA; 255]);
+
+        let result = parse_content_metadata(&bytes);
+        assert_eq!(result, Err(Error::ContentReserved));
+
+        // Even with insufficient bytes, should still reject 0xFF
+        let result = parse_content_metadata(&[0xFF, 0xAA]);
+        assert_eq!(result, Err(Error::ContentReserved));
+
+        // 0xFE (254) should still work as proprietary
+        let mut bytes = vec![0xFE];
+        bytes.extend(vec![0xBB; 254]);
+        let (offset, content) = parse_content_metadata(&bytes).unwrap();
+        assert_eq!(offset, 255); // 1 + 254
+        assert_eq!(content, Content::Proprietary(vec![0xBB; 254]));
     }
 
     #[test]
