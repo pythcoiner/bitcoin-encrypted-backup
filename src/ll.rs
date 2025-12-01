@@ -117,6 +117,9 @@ pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
             }
         }
         len => {
+            if bytes.len() < (len as usize + 1) {
+                return Err(Error::ContentMetadata);
+            }
             let end = (len as usize + 1).min(bytes.len());
             let data = &bytes[1..end].to_vec();
             Ok((end, Content::Proprietary(data.to_vec())))
@@ -801,6 +804,38 @@ mod tests {
         // Proprietary
         let (_, c) = parse_content_metadata(&[3, 0, 0, 0]).unwrap();
         assert_eq!(c, Content::Proprietary(vec![0, 0, 0]));
+    }
+
+    #[test]
+    fn test_parse_content_metadata_insufficient_bytes() {
+        // LENGTH=2 but only 1 byte follows (should need 2 bytes for BIP number)
+        let result = parse_content_metadata(&[2, 0x01]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+
+        // LENGTH=3 but only 2 bytes follow (should need 3 bytes for proprietary)
+        let result = parse_content_metadata(&[3, 0xAA, 0xBB]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+
+        // LENGTH=5 but only 3 bytes follow
+        let result = parse_content_metadata(&[5, 0xAA, 0xBB, 0xCC]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+
+        // Edge case: LENGTH=255 (reserved) but even if it weren't, insufficient bytes
+        let result = parse_content_metadata(&[255, 0xAA]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+    }
+
+    #[test]
+    fn test_parse_content_metadata_exact_bytes() {
+        // LENGTH=3 with exactly 3 bytes - should succeed
+        let (offset, content) = parse_content_metadata(&[3, 0xAA, 0xBB, 0xCC]).unwrap();
+        assert_eq!(offset, 4); // 1 (LENGTH) + 3 (data)
+        assert_eq!(content, Content::Proprietary(vec![0xAA, 0xBB, 0xCC]));
+
+        // LENGTH=2 with exactly 2 bytes - should succeed for BIP number
+        let (offset, content) = parse_content_metadata(&[2, 0x01, 0x7C]).unwrap();
+        assert_eq!(offset, 3);
+        assert_eq!(content, Content::Bip380);
     }
 
     #[test]
