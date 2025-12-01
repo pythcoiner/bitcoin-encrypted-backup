@@ -10,7 +10,6 @@ repository = "https://github.com/pythcoiner/bitcoin-encrypted-backup"
 
 [dependencies]
 aes-gcm = {version = "0.10.3", default-features = false, features = ["aes", "alloc"]}
-num_enum = "0.7"
 rand = {version = "0.9.2", optional = true}
 
 #miniscript

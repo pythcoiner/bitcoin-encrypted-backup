@@ -25,8 +25,6 @@ pub use mscript_12_0 as miniscript;
 #[cfg(feature = "miniscript_12_3_5")]
 pub use mscript_12_3_5 as miniscript;
 
-use num_enum::{FromPrimitive, IntoPrimitive};
-
 pub mod descriptor;
 pub mod ll;
 #[cfg(feature = "devices")]
@@ -268,13 +266,31 @@ impl EncryptedBackup {
     }
 }
 
-#[derive(Debug, Clone, Copy, FromPrimitive, IntoPrimitive, PartialEq, Eq)]
-#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encryption {
     Undefined,
     AesGcm256,
-    #[num_enum(default)]
-    Unknown = 0xFF,
+    Unknown,
+}
+
+impl From<u8> for Encryption {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Undefined,
+            1 => Self::AesGcm256,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<Encryption> for u8 {
+    fn from(value: Encryption) -> Self {
+        match value {
+            Encryption::Undefined => 0x00,
+            Encryption::AesGcm256 => 0x01,
+            Encryption::Unknown => 0xFF,
+        }
+    }
 }
 
 impl Encryption {
@@ -286,13 +302,31 @@ impl Encryption {
     }
 }
 
-#[derive(Debug, Clone, Copy, FromPrimitive, IntoPrimitive, PartialEq, Eq)]
-#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     V0,
     V1,
-    #[num_enum(default)]
-    Unknown = 0xFF,
+    Unknown,
+}
+
+impl From<Version> for u8 {
+    fn from(value: Version) -> Self {
+        match value {
+            Version::V0 => 0,
+            Version::V1 => 1,
+            Version::Unknown => 0xFF,
+        }
+    }
+}
+
+impl From<u8> for Version {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::V0,
+            1 => Self::V1,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 impl Version {
