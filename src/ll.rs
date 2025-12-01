@@ -176,12 +176,23 @@ pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u8; 
 
 pub fn inner_encrypt(
     secret: sha256::Hash,
-    mut data: Vec<u8>,
+    data: Vec<u8>,
     #[cfg(not(feature = "rand"))] nonce: [u8; 12],
 ) -> Result<([u8; 12], Vec<u8>), Error> {
     #[cfg(feature = "rand")]
     let nonce = nonce();
 
+    encrypt_with_nonce(secret, data, nonce)
+}
+
+pub fn encrypt_with_nonce(
+    secret: sha256::Hash,
+    mut data: Vec<u8>,
+    nonce: [u8; 12],
+) -> Result<([u8; 12], Vec<u8>), Error> {
+    if data.is_empty() {
+        return Err(Error::EmptyBytes);
+    }
     #[allow(deprecated)]
     let key = Key::<Aes256Gcm>::from_slice(secret.as_byte_array());
     let cipher = Aes256Gcm::new(key);
@@ -370,12 +381,12 @@ pub fn decode_v1(
     ))
 }
 
-pub fn encrypt_aes_gcm_256_v1(
+fn encrypt_aes_gcm_256_v1_with_nonce(
     derivation_paths: Vec<DerivationPath>,
     content_metadata: Content,
     keys: Vec<secp256k1::PublicKey>,
     data: &[u8],
-    #[cfg(not(feature = "rand"))] nonce: [u8; 12],
+    nonce: [u8; 12],
 ) -> Result<Vec<u8>, Error> {
     // drop duplicates keys and sort out bip341 nums
     let keys = keys
@@ -424,12 +435,7 @@ pub fn encrypt_aes_gcm_256_v1(
     let mut payload = content_metadata;
     payload.append(&mut data.to_vec());
 
-    let (nonce, cyphertext) = inner_encrypt(
-        secret,
-        payload.to_vec(),
-        #[cfg(not(feature = "rand"))]
-        nonce,
-    )?;
+    let (nonce, cyphertext) = encrypt_with_nonce(secret, payload.to_vec(), nonce)?;
     let encrypted_payload = encode_encrypted_payload(nonce, cyphertext.as_slice())?;
 
     Ok(encode_v1(
@@ -439,6 +445,18 @@ pub fn encrypt_aes_gcm_256_v1(
         Encryption::AesGcm256.into(),
         encrypted_payload,
     ))
+}
+
+pub fn encrypt_aes_gcm_256_v1(
+    derivation_paths: Vec<DerivationPath>,
+    content_metadata: Content,
+    keys: Vec<secp256k1::PublicKey>,
+    data: &[u8],
+    #[cfg(not(feature = "rand"))] nonce: [u8; 12],
+) -> Result<Vec<u8>, Error> {
+    #[cfg(feature = "rand")]
+    let nonce = nonce();
+    encrypt_aes_gcm_256_v1_with_nonce(derivation_paths, content_metadata, keys, data, nonce)
 }
 
 pub fn try_decrypt_aes_gcm_256(
@@ -1226,5 +1244,472 @@ mod tests {
         // decryption must then fails
         let fails = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce);
         assert!(fails.is_none());
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod derivation_paths {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+    use core::str::FromStr;
+    use miniscript::bitcoin::bip32::DerivationPath;
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/derivation_path.json");
+
+    #[derive(serde::Deserialize)]
+    struct TestVector {
+        description: String,
+        paths: Vec<String>,
+        expected: Option<String>,
+    }
+
+    #[test]
+    fn test_vector_derivation_path_ser_deser() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        let mut cases: Vec<(
+            Vec<DerivationPath>,
+            Option<Vec<u8>>,
+            String, /* description */
+        )> = vec![];
+        for v in vectors {
+            let p = v
+                .paths
+                .into_iter()
+                .map(|s| DerivationPath::from_str(&s).unwrap())
+                .collect();
+            let ser: Option<Vec<u8>> = v
+                .expected
+                .map(|hex_str| hex::decode(hex_str).expect(&v.description));
+            cases.push((p, ser, v.description));
+        }
+
+        for (paths, expected, description) in cases {
+            // serialize
+            let result = encode_derivation_paths(paths.clone()).ok();
+            if result != expected {
+                panic!("Derivation path serialization failed: {description}");
+            }
+
+            // deserialize
+            if let Some(serialized) = expected {
+                let (_, paths2) = parse_derivation_paths(&serialized).expect(&description);
+                if paths != paths2 {
+                    panic!("Derivation path deserialization failed: {description}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod individual_secrets_vectors {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/individual_secrets.json");
+
+    #[derive(serde::Deserialize)]
+    struct TestVector {
+        description: String,
+        secrets: Vec<String>,
+        expected: Option<String>,
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_vector_individual_secrets_ser_deser() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        let mut cases: Vec<(
+            Vec<[u8; 32]>,
+            Option<Vec<u8>>,
+            String, /* description */
+        )> = vec![];
+
+        for v in vectors {
+            let secrets = v
+                .secrets
+                .into_iter()
+                .map(|hex_str| {
+                    let bytes = hex::decode(hex_str).expect(&v.description);
+                    let arr: [u8; 32] = bytes.try_into().expect("secret must be 32 bytes");
+                    arr
+                })
+                .collect();
+            let ser: Option<Vec<u8>> = v
+                .expected
+                .map(|hex_str| hex::decode(hex_str).expect(&v.description));
+            cases.push((secrets, ser, v.description));
+        }
+
+        for (mut secrets, expected, description) in cases {
+            // serialize
+            let result = encode_individual_secrets(&secrets).ok();
+            if result != expected {
+                panic!("Individual secrets serialization failed: {description}");
+            }
+
+            // deserialize
+            if let Some(exp) = expected {
+                let (_, mut parsed) = parse_individual_secrets(&exp).expect(&description);
+                secrets.sort();
+                parsed.sort();
+
+                if secrets != parsed {
+                    panic!("Individual secrets deserialization failed: {description}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod encryption_secret {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+    use core::str::FromStr;
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/encryption_secret.json");
+
+    #[derive(serde::Deserialize)]
+    struct TestVector {
+        description: String,
+        keys: Vec<String>,
+        decryption_secret: String,
+        individual_secrets: Vec<String>,
+    }
+
+    #[test]
+    fn test_vector_encryption_secret() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        for v in vectors {
+            let description = &v.description;
+
+            // Parse public keys
+            let keys: Vec<secp256k1::PublicKey> = v
+                .keys
+                .iter()
+                .map(|hex_str| secp256k1::PublicKey::from_str(hex_str).expect(description))
+                .collect();
+
+            // Convert to raw bytes and sort
+            let mut raw_keys: Vec<[u8; 33]> = keys.iter().map(|k| k.serialize()).collect();
+            raw_keys.sort();
+            raw_keys.dedup();
+
+            // Parse expected decryption secret
+            let expected_decryption_secret = hex::decode(&v.decryption_secret).expect(description);
+            let expected_decryption_secret: [u8; 32] = expected_decryption_secret
+                .try_into()
+                .expect("decryption secret must be 32 bytes");
+
+            // Parse expected individual secrets
+            let expected_individual_secrets: Vec<[u8; 32]> = v
+                .individual_secrets
+                .iter()
+                .map(|hex_str| {
+                    let bytes = hex::decode(hex_str).expect(description);
+                    let arr: [u8; 32] = bytes
+                        .try_into()
+                        .expect("individual secret must be 32 bytes");
+                    arr
+                })
+                .collect();
+
+            // Test decryption_secret generation
+            let computed_decryption_secret = decryption_secret(&raw_keys);
+            assert_eq!(
+                computed_decryption_secret.as_byte_array(),
+                &expected_decryption_secret,
+                "Decryption secret mismatch: {}",
+                description
+            );
+
+            // Test individual_secrets generation
+            let computed_individual_secrets =
+                individual_secrets(&computed_decryption_secret, &raw_keys);
+            assert_eq!(
+                computed_individual_secrets.len(),
+                expected_individual_secrets.len(),
+                "Individual secrets count mismatch: {}",
+                description
+            );
+
+            for (i, (computed, expected)) in computed_individual_secrets
+                .iter()
+                .zip(expected_individual_secrets.iter())
+                .enumerate()
+            {
+                assert_eq!(
+                    computed, expected,
+                    "Individual secret {} mismatch: {}",
+                    i, description
+                );
+            }
+
+            // Test round-trip: recover decryption secret from individual secrets
+            for (i, raw_key) in raw_keys.iter().enumerate() {
+                let individual_sec = computed_individual_secrets[i];
+
+                // Compute Si = SHA256("BEB_BACKUP_INDIVIDUAL_SECRET" || key)
+                let mut engine = sha256::HashEngine::default();
+                engine.input(INDIVIDUAL_SECRET.as_bytes());
+                engine.input(raw_key);
+                let si = sha256::Hash::from_engine(engine);
+
+                // Recover secret: S = Ci XOR Si
+                let recovered_secret = xor(&individual_sec, si.as_byte_array());
+
+                assert_eq!(
+                    recovered_secret, expected_decryption_secret,
+                    "Round-trip recovery failed for key {}: {}",
+                    i, description
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod encryption_vectors {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/aesgcm256_encryption.json");
+
+    #[derive(serde::Deserialize)]
+    struct TestVector {
+        description: String,
+        nonce: String,
+        plaintext: String,
+        secret: String,
+        ciphertext: Option<String>,
+    }
+
+    #[test]
+    fn test_vector_aesgcm256_encryption() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        for v in vectors {
+            let description = &v.description;
+
+            // Parse inputs
+            let nonce_bytes = hex::decode(&v.nonce).expect(description);
+            let nonce: [u8; 12] = nonce_bytes.try_into().expect("nonce must be 12 bytes");
+
+            let secret_bytes = hex::decode(&v.secret).expect(description);
+            let secret: [u8; 32] = secret_bytes.try_into().expect("secret must be 32 bytes");
+            let secret_hash = sha256::Hash::from_byte_array(secret);
+
+            let plaintext = if v.plaintext.is_empty() {
+                vec![]
+            } else {
+                hex::decode(&v.plaintext).expect(description)
+            };
+
+            if let Some(expected_ciphertext_hex) = v.ciphertext {
+                // Expected to succeed
+                let expected_ciphertext = hex::decode(&expected_ciphertext_hex).expect(description);
+
+                // Test encryption
+                let (_, computed_ciphertext) =
+                    encrypt_with_nonce(secret_hash, plaintext.clone(), nonce).expect(description);
+
+                assert_eq!(
+                    computed_ciphertext, expected_ciphertext,
+                    "Ciphertext mismatch: {}",
+                    description
+                );
+
+                // Test decryption
+                let decrypted = try_decrypt_aes_gcm_256(&computed_ciphertext, &secret, nonce)
+                    .expect(description);
+
+                assert_eq!(decrypted, plaintext, "Decryption failed: {}", description);
+            } else {
+                // Expected to fail
+                let result = encrypt_with_nonce(secret_hash, plaintext, nonce);
+                assert!(
+                    result.is_err(),
+                    "Encryption should have failed: {}",
+                    description
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod encrypted_backup {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+    use core::str::FromStr;
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/encrypted_backup.json");
+
+    #[derive(serde::Deserialize)]
+    struct TestVector {
+        description: String,
+        version: u8,
+        encryption: u8,
+        content: String,
+        keys: Vec<String>,
+        derivation_paths: Vec<String>,
+        plaintext: String,
+        nonce: String,
+        expected: String,
+    }
+
+    #[test]
+    fn test_vector_encrypted_backup() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        for v in vectors {
+            let description = &v.description;
+
+            // Parse content metadata from hex
+            let content_bytes = hex::decode(&v.content).expect(description);
+            let (_, content) = parse_content_metadata(&content_bytes)
+                .ok()
+                .unwrap_or_else(|| panic!("Failed to parse content for: {}", description));
+
+            let keys: Vec<secp256k1::PublicKey> = v
+                .keys
+                .iter()
+                .map(|s| secp256k1::PublicKey::from_str(s).expect(description))
+                .collect();
+
+            let mut derivation_paths: Vec<DerivationPath> = v
+                .derivation_paths
+                .iter()
+                .map(|s| DerivationPath::from_str(s).expect(description))
+                .collect();
+
+            let plaintext = v.plaintext;
+
+            let nonce_bytes = hex::decode(&v.nonce).expect(description);
+            let nonce: [u8; 12] = nonce_bytes.try_into().expect("nonce must be 12 bytes");
+
+            let expected_bytes = hex::decode(&v.expected).expect(description);
+
+            // Test encryption
+            let encrypted = encrypt_aes_gcm_256_v1_with_nonce(
+                derivation_paths.clone(),
+                content.clone(),
+                keys.clone(),
+                plaintext.as_bytes(),
+                nonce,
+            )
+            .expect(description);
+
+            assert_eq!(
+                encrypted, expected_bytes,
+                "Encrypted payload mismatch: {}",
+                description
+            );
+
+            // Test decryption
+            let version = decode_version(&encrypted).expect(description);
+            assert_eq!(version, v.version, "Version mismatch: {}", description);
+
+            let mut parsed_derivation_paths =
+                decode_derivation_paths(&encrypted).expect(description);
+
+            parsed_derivation_paths.sort();
+            derivation_paths.sort();
+            assert_eq!(
+                parsed_derivation_paths, derivation_paths,
+                "Derivation paths mismatch: {}",
+                description
+            );
+
+            let (_, individual_secrets, encryption_type, parsed_nonce, cyphertext) =
+                decode_v1(&encrypted).expect(description);
+
+            assert_eq!(
+                encryption_type, v.encryption,
+                "Encryption type mismatch: {}",
+                description
+            );
+            assert_eq!(parsed_nonce, nonce, "Nonce mismatch: {}", description);
+
+            // Test decryption with each key
+            for key in &keys {
+                let (decrypted_content, decrypted_plaintext) = decrypt_aes_gcm_256_v1(
+                    *key,
+                    &individual_secrets,
+                    cyphertext.clone(),
+                    parsed_nonce,
+                )
+                .expect(description);
+
+                let decrypted_plaintext = String::from_utf8(decrypted_plaintext).unwrap();
+
+                assert_eq!(
+                    decrypted_content, content,
+                    "Content metadata mismatch: {}",
+                    description
+                );
+                assert_eq!(
+                    decrypted_plaintext, plaintext,
+                    "Decrypted plaintext mismatch: {}",
+                    description
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod content_vectors {
+    use super::*;
+    use alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/content_type.json");
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+
+    struct TestVector {
+        description: String,
+        valid: bool,
+        content: String,
+    }
+
+    #[test]
+    fn test_vector_content() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        let mut parsed = vec![];
+        for v in vectors {
+            let content = hex::decode(&v.content).expect(&v.description);
+            match parse_content_metadata(&content) {
+                Ok((_, content)) => {
+                    assert!(v.valid);
+                    parsed.push((content, v.description.to_string()));
+                }
+                Err(_) => assert!(!v.valid),
+            }
+        }
+
+        let expected = vec![
+            (Content::None, "None".to_string()),
+            (Content::Bip380, "Bip 380".to_string()),
+            (Content::Bip388, "Bip 388".to_string()),
+            (Content::Bip329, "Bip 329".to_string()),
+            (Content::BIP(999), "Bip 999".to_string()),
+            (Content::BIP(65535), "Bip max".to_string()),
+            (Content::BIP(0), "Bip min".to_string()),
+            (
+                Content::Proprietary(vec![0x00, 0x01, 0x02, 0x03]),
+                "Propietary 00010203".to_string(),
+            ),
+        ];
+
+        assert_eq!(parsed, expected);
     }
 }
