@@ -1447,8 +1447,7 @@ mod encryption_secret {
             assert_eq!(
                 computed_decryption_secret.as_byte_array(),
                 &expected_decryption_secret,
-                "Decryption secret mismatch: {}",
-                description
+                "Decryption secret mismatch: {description}"
             );
 
             // Test individual_secrets generation
@@ -1457,8 +1456,7 @@ mod encryption_secret {
             assert_eq!(
                 computed_individual_secrets.len(),
                 expected_individual_secrets.len(),
-                "Individual secrets count mismatch: {}",
-                description
+                "Individual secrets count mismatch: {description}"
             );
 
             for (i, (computed, expected)) in computed_individual_secrets
@@ -1468,8 +1466,7 @@ mod encryption_secret {
             {
                 assert_eq!(
                     computed, expected,
-                    "Individual secret {} mismatch: {}",
-                    i, description
+                    "Individual secret {description} mismatch: {i}"
                 );
             }
 
@@ -1488,8 +1485,7 @@ mod encryption_secret {
 
                 assert_eq!(
                     recovered_secret, expected_decryption_secret,
-                    "Round-trip recovery failed for key {}: {}",
-                    i, description
+                    "Round-trip recovery failed for key {i}: {description}"
                 );
             }
         }
@@ -1543,22 +1539,20 @@ mod encryption_vectors {
 
                 assert_eq!(
                     computed_ciphertext, expected_ciphertext,
-                    "Ciphertext mismatch: {}",
-                    description
+                    "Ciphertext mismatch: {description}"
                 );
 
                 // Test decryption
                 let decrypted = try_decrypt_aes_gcm_256(&computed_ciphertext, &secret, nonce)
                     .expect(description);
 
-                assert_eq!(decrypted, plaintext, "Decryption failed: {}", description);
+                assert_eq!(decrypted, plaintext, "Decryption failed: {description}");
             } else {
                 // Expected to fail
                 let result = encrypt_with_nonce(secret_hash, plaintext, nonce);
                 assert!(
                     result.is_err(),
-                    "Encryption should have failed: {}",
-                    description
+                    "Encryption should have failed: {description}"
                 );
             }
         }
@@ -1597,7 +1591,7 @@ mod encrypted_backup {
             let content_bytes = hex::decode(&v.content).expect(description);
             let (_, content) = parse_content_metadata(&content_bytes)
                 .ok()
-                .unwrap_or_else(|| panic!("Failed to parse content for: {}", description));
+                .unwrap_or_else(|| panic!("Failed to parse content for: {description}"));
 
             let keys: Vec<secp256k1::PublicKey> = v
                 .keys
@@ -1630,13 +1624,12 @@ mod encrypted_backup {
 
             assert_eq!(
                 encrypted, expected_bytes,
-                "Encrypted payload mismatch: {}",
-                description
+                "Encrypted payload mismatch: {description}"
             );
 
             // Test decryption
             let version = decode_version(&encrypted).expect(description);
-            assert_eq!(version, v.version, "Version mismatch: {}", description);
+            assert_eq!(version, v.version, "Version mismatch: {description}");
 
             let mut parsed_derivation_paths =
                 decode_derivation_paths(&encrypted).expect(description);
@@ -1645,8 +1638,7 @@ mod encrypted_backup {
             derivation_paths.sort();
             assert_eq!(
                 parsed_derivation_paths, derivation_paths,
-                "Derivation paths mismatch: {}",
-                description
+                "Derivation paths mismatch: {description}"
             );
 
             let (_, individual_secrets, encryption_type, parsed_nonce, cyphertext) =
@@ -1654,10 +1646,9 @@ mod encrypted_backup {
 
             assert_eq!(
                 encryption_type, v.encryption,
-                "Encryption type mismatch: {}",
-                description
+                "Encryption type mismatch: {description}"
             );
-            assert_eq!(parsed_nonce, nonce, "Nonce mismatch: {}", description);
+            assert_eq!(parsed_nonce, nonce, "Nonce mismatch: {description}");
 
             // Test decryption with each key
             for key in &keys {
@@ -1673,13 +1664,11 @@ mod encrypted_backup {
 
                 assert_eq!(
                     decrypted_content, content,
-                    "Content metadata mismatch: {}",
-                    description
+                    "Content metadata mismatch: {description}"
                 );
                 assert_eq!(
                     decrypted_plaintext, plaintext,
-                    "Decrypted plaintext mismatch: {}",
-                    description
+                    "Decrypted plaintext mismatch: {description}"
                 );
             }
         }
