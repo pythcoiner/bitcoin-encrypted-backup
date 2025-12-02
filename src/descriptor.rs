@@ -288,3 +288,31 @@ pub mod tests {
         assert_eq!(res, (pks, deriv));
     }
 }
+
+#[cfg(all(test, feature = "rand"))]
+mod keys_types {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/keys_types.json");
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+
+    struct TestVector {
+        description: String,
+        key: String,
+        expected: String,
+    }
+
+    #[test]
+    fn test_vector_keys_types() {
+        let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+
+        for v in vectors {
+            let dpk = DescriptorPublicKey::from_str(&v.key).expect(&v.description);
+            let pk = dpk_to_pk(&dpk);
+            let res = hex::encode(pk.serialize());
+            assert_eq!(v.expected, res, "{}", v.description);
+        }
+    }
+}
