@@ -292,6 +292,7 @@ pub mod tests {
 #[cfg(all(test, feature = "rand"))]
 mod keys_types {
     use super::*;
+    use crate::ll::pk_to_xonly;
     use alloc::{string::String, vec::Vec};
 
     const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/keys_types.json");
@@ -311,7 +312,9 @@ mod keys_types {
         for v in vectors {
             let dpk = DescriptorPublicKey::from_str(&v.key).expect(&v.description);
             let pk = dpk_to_pk(&dpk);
-            let res = hex::encode(pk.serialize());
+            // v1: normalize to x-only (32 bytes)
+            let xonly = pk_to_xonly(&pk);
+            let res = hex::encode(xonly);
             assert_eq!(v.expected, res, "{}", v.description);
         }
     }

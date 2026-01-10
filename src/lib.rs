@@ -302,13 +302,14 @@ impl Encryption {
     }
 }
 
-// ============== v1 byte mapping ==============
+// ============== v1 byte mapping (0x00=Reserved, 0x01=ChaCha20, 0x02=AesGcm256) ==============
 
 impl From<u8> for Encryption {
     fn from(value: u8) -> Self {
         match value {
-            0 => Self::Undefined,
-            1 => Self::AesGcm256,
+            0x00 => Self::Undefined,
+            0x01 => Self::ChaCha20Poly1305,
+            0x02 => Self::AesGcm256,
             _ => Self::Unknown,
         }
     }
@@ -318,8 +319,8 @@ impl From<Encryption> for u8 {
     fn from(value: Encryption) -> Self {
         match value {
             Encryption::Undefined => 0x00,
-            Encryption::AesGcm256 => 0x01,
-            Encryption::ChaCha20Poly1305 => 0xFF, // Not yet mapped in v1
+            Encryption::ChaCha20Poly1305 => 0x01,
+            Encryption::AesGcm256 => 0x02,
             Encryption::Unknown => 0xFF,
         }
     }
@@ -549,22 +550,26 @@ mod tests {
 
     #[test]
     fn test_encryption_to_u8() {
+        // v1 mapping: 0x00=Reserved, 0x01=ChaCha20, 0x02=AesGcm256
         let mut u: u8 = Encryption::AesGcm256.into();
-        assert_eq!(0x01, u);
+        assert_eq!(0x02, u); // v1: AesGcm256 = 0x02
         u = Encryption::Undefined.into();
-        assert_eq!(0x00, u);
+        assert_eq!(0x00, u); // Reserved
         u = Encryption::Unknown.into();
         assert_eq!(0xFF, u);
     }
 
     #[test]
     fn test_u8_to_encryption() {
+        // v1 mapping: 0x00=Reserved, 0x01=ChaCha20Poly1305, 0x02=AesGcm256
         let mut e: Encryption = 0x00u8.into();
-        assert_eq!(e, Encryption::Undefined);
+        assert_eq!(e, Encryption::Undefined); // Reserved
         e = 0x01u8.into();
+        assert_eq!(e, Encryption::ChaCha20Poly1305);
+        e = 0x02u8.into();
         assert_eq!(e, Encryption::AesGcm256);
 
-        for i in 0x02..0xFFu8 {
+        for i in 0x03..0xFFu8 {
             e = i.into();
             assert_eq!(e, Encryption::Unknown);
         }

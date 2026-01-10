@@ -30,7 +30,7 @@ const INDIVIDUAL_SECRET_V0: &str = "BEB_BACKUP_INDIVIDUAL_SECRET";
 const DECRYPTION_SECRET: &str = "BIPXXXX_DECRYPTION_SECRET";
 const INDIVIDUAL_SECRET: &str = "BIPXXXX_INDIVIDUAL_SECRET";
 
-const MAGIC: &str = "BEB";
+const MAGIC: &str = "BIPXXX";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -138,26 +138,36 @@ pub fn parse_content_metadata_v0(bytes: &[u8]) -> Result<(usize, Content), Error
     }
 }
 
-// ============== v1 content encoding (will be updated to TYPE-based) ==============
+// ============== v1 content encoding (TYPE-based format) ==============
+//
+// TYPE values:
+// - 0x00 = Reserved (parsers MUST reject)
+// - 0x01 = BIP Number (2-byte BE, no LENGTH field)
+// - 0x02 = Vendor-Specific (LENGTH + DATA)
+// - < 0x80 = unknown, skip by consuming LENGTH bytes
+// - >= 0x80 = unknown, stop parsing CONTENT
 
-/// Encode content metadata, 3 variants:
-/// - <LENGTH == 0> => None
-/// - <LENGTH == 2><BIP_NUMBER> => encoding format defined in BIP<BIP_NUMBER>
-/// - <LENGTH > 2> => proprietary
 impl From<Content> for Vec<u8> {
     fn from(value: Content) -> Self {
         match value {
-            Content::None => [0].into(),
+            // For v1, None is not a valid content type - we use TYPE-based encoding
+            // None could be represented by absence of content, but for compatibility
+            // we'll encode it as TYPE=0x01 with BIP=0 (reserved BIP number)
+            Content::None => vec![0x01, 0x00, 0x00], // TYPE=BIP, BIP=0
             Content::Proprietary(mut data) => {
-                assert!(data.len() > 2);
-                assert!(data.len() < u8::MAX as usize);
-                let mut content = vec![data.len() as u8];
+                // TYPE=0x02, LENGTH, DATA
+                let data_len = data.len();
+                assert!(data_len > 0);
+                let mut content = vec![0x02];
+                // Use compact size for LENGTH
+                let var_int = bitcoin::consensus::serialize(&bitcoin::VarInt(data_len as u64));
+                content.extend(var_int);
                 content.append(&mut data);
                 content
             }
             Content::Unknown => unimplemented!(),
             c => {
-                let mut content = vec![2];
+                // TYPE=0x01, BIP_NUMBER (2 bytes BE, no LENGTH)
                 let bip_number = match c {
                     Content::Bip380 => 380u16.to_be_bytes(),
                     Content::Bip388 => 388u16.to_be_bytes(),
@@ -165,43 +175,73 @@ impl From<Content> for Vec<u8> {
                     Content::BIP(bip) => bip.to_be_bytes(),
                     _ => unreachable!(),
                 };
-                content.append(&mut bip_number.to_vec());
-                content
+                vec![0x01, bip_number[0], bip_number[1]]
             }
         }
     }
 }
 
 pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
-    let len = bytes.len();
-    if len == 0 {
-        Err(Error::ContentMetadataEmpty)?
+    if bytes.is_empty() {
+        return Err(Error::ContentMetadataEmpty);
     }
-    let data_len = bytes[0];
-    match data_len {
-        0 => Ok((1, Content::None)),
-        1 => Err(Error::ContentMetadata),
-        2 => {
+
+    let content_type = bytes[0];
+    match content_type {
+        // 0x00 = Reserved - must reject
+        0x00 => Err(Error::ContentReserved),
+
+        // 0x01 = BIP Number (2-byte BE, no LENGTH field)
+        0x01 => {
             if bytes.len() < 3 {
                 return Err(Error::ContentMetadata);
             }
             let bip_number = u16::from_be_bytes(bytes[1..3].try_into().expect("len ok"));
-            match bip_number {
-                380 => Ok((3, Content::Bip380)),
-                388 => Ok((3, Content::Bip388)),
-                329 => Ok((3, Content::Bip329)),
-                bip_number => Ok((3, Content::BIP(bip_number))),
-            }
+            let content = match bip_number {
+                380 => Content::Bip380,
+                388 => Content::Bip388,
+                329 => Content::Bip329,
+                0 => Content::None, // Special case: BIP=0 represents None
+                bip => Content::BIP(bip),
+            };
+            Ok((3, content))
         }
-        255 => Err(Error::ContentReserved),
-        len => {
-            if bytes.len() < (len as usize + 1) {
+
+        // 0x02 = Vendor-Specific (LENGTH + DATA)
+        0x02 => {
+            if bytes.len() < 2 {
                 return Err(Error::ContentMetadata);
             }
-            let end = (len as usize + 1).min(bytes.len());
-            let data = &bytes[1..end].to_vec();
-            Ok((end, Content::Proprietary(data.to_vec())))
+            let (VarInt(data_len), incr) =
+                bitcoin::consensus::deserialize_partial(&bytes[1..]).map_err(|_| Error::VarInt)?;
+            let data_len = data_len as usize;
+            let data_start = 1 + incr;
+            let data_end = data_start + data_len;
+            if bytes.len() < data_end {
+                return Err(Error::ContentMetadata);
+            }
+            let data = bytes[data_start..data_end].to_vec();
+            Ok((data_end, Content::Proprietary(data)))
         }
+
+        // 0x03..0x7F = unknown, skip by consuming LENGTH bytes
+        t if t >= 0x03 && t < 0x80 => {
+            if bytes.len() < 2 {
+                return Err(Error::ContentMetadata);
+            }
+            let (VarInt(data_len), incr) =
+                bitcoin::consensus::deserialize_partial(&bytes[1..]).map_err(|_| Error::VarInt)?;
+            let data_len = data_len as usize;
+            let end = 1 + incr + data_len;
+            if bytes.len() < end {
+                return Err(Error::ContentMetadata);
+            }
+            // Skip unknown type, return Unknown content
+            Ok((end, Content::Unknown))
+        }
+
+        // >= 0x80 = stop parsing CONTENT, return error (unknown required type)
+        _ => Err(Error::ContentMetadata),
     }
 }
 
@@ -254,16 +294,22 @@ pub fn individual_secrets_v0(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u
         .collect::<Vec<_>>()
 }
 
-// ============== v1 secret functions (33-byte compressed keys for now, will be updated) ==============
+// ============== v1 secret functions (32-byte x-only keys) ==============
 
-pub fn decryption_secret(keys: &[[u8; 33]]) -> sha256::Hash {
+/// Extract the x-only public key (32 bytes) from a secp256k1 public key.
+pub fn pk_to_xonly(key: &secp256k1::PublicKey) -> [u8; 32] {
+    let serialized = key.serialize();
+    serialized[1..33].try_into().expect("32 bytes")
+}
+
+pub fn decryption_secret(keys: &[[u8; 32]]) -> sha256::Hash {
     let mut engine = sha256::HashEngine::default();
     engine.input(DECRYPTION_SECRET.as_bytes());
     keys.iter().for_each(|k| engine.input(k));
     sha256::Hash::from_engine(engine)
 }
 
-pub fn individual_secret(secret: &sha256::Hash, key: &[u8; 33]) -> [u8; 32] {
+pub fn individual_secret(secret: &sha256::Hash, key: &[u8; 32]) -> [u8; 32] {
     let mut engine = sha256::HashEngine::default();
     engine.input(INDIVIDUAL_SECRET.as_bytes());
     engine.input(key);
@@ -271,7 +317,7 @@ pub fn individual_secret(secret: &sha256::Hash, key: &[u8; 33]) -> [u8; 32] {
     xor(secret.as_byte_array(), si.as_byte_array())
 }
 
-pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u8; 32]> {
+pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; 32]]) -> Vec<[u8; 32]> {
     keys.iter()
         .map(|k| individual_secret(secret, k))
         .collect::<Vec<_>>()
@@ -526,7 +572,11 @@ fn encrypt_aes_gcm_256_v1_with_nonce(
         return Err(Error::ContentMetadata);
     }
 
-    let mut raw_keys = keys.into_iter().map(|k| k.serialize()).collect::<Vec<_>>();
+    // v1: Use 32-byte x-only public keys
+    let mut raw_keys = keys
+        .into_iter()
+        .map(|k| pk_to_xonly(&k))
+        .collect::<Vec<_>>();
     raw_keys.sort();
 
     let secret = decryption_secret(&raw_keys);
@@ -582,7 +632,8 @@ pub fn decrypt_aes_gcm_256_v1(
     cyphertext: Vec<u8>,
     nonce: [u8; 12],
 ) -> Result<(Content, Vec<u8>), Error> {
-    let raw_key = key.serialize();
+    // v1: Use 32-byte x-only public key
+    let raw_key = pk_to_xonly(&key);
 
     let mut engine = sha256::HashEngine::default();
     engine.input(INDIVIDUAL_SECRET.as_bytes());
@@ -921,8 +972,8 @@ mod tests {
 
     #[test]
     fn test_parse_magic() {
-        let magic = "BEB".as_bytes();
-        assert_eq!(MAGIC, "BEB");
+        let magic = "BIPXXX".as_bytes();
+        assert_eq!(MAGIC, "BIPXXX");
         let offset = parse_magic_byte(magic).unwrap();
         assert_eq!(offset, magic.len());
         let res = parse_magic_byte("BOBt s".as_bytes());
@@ -1006,113 +1057,120 @@ mod tests {
 
     #[test]
     fn test_parse_content() {
+        // v1 TYPE-based format:
+        // TYPE=0x00 -> Reserved (reject)
+        // TYPE=0x01 -> BIP number (2-byte BE, no LENGTH)
+        // TYPE=0x02 -> Vendor-specific (LENGTH + DATA)
+        // TYPE < 0x80 -> Unknown, skip LENGTH bytes
+        // TYPE >= 0x80 -> Stop parsing
+
         // empty bytes must fail
         assert!(parse_content_metadata(&[]).is_err());
-        // None
-        let (_, c) = parse_content_metadata(&[0]).unwrap();
-        assert_eq!(c, Content::None);
-        // len == 1 fails
-        assert!(parse_content_metadata(&[1, 0]).is_err());
-        // BIP380
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x7c]).unwrap();
+
+        // TYPE=0x00 (Reserved) must fail
+        let result = parse_content_metadata(&[0x00]);
+        assert_eq!(result, Err(Error::ContentReserved));
+
+        // TYPE=0x01 (BIP) - BIP380
+        let (offset, c) = parse_content_metadata(&[0x01, 0x01, 0x7c]).unwrap();
+        assert_eq!(offset, 3);
         assert_eq!(c, Content::Bip380);
-        // BIP388
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x84]).unwrap();
+
+        // TYPE=0x01 (BIP) - BIP388
+        let (_, c) = parse_content_metadata(&[0x01, 0x01, 0x84]).unwrap();
         assert_eq!(c, Content::Bip388);
-        // BIP329
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x49]).unwrap();
+
+        // TYPE=0x01 (BIP) - BIP329
+        let (_, c) = parse_content_metadata(&[0x01, 0x01, 0x49]).unwrap();
         assert_eq!(c, Content::Bip329);
-        // Arbitrary BIPs
-        let (_, c) = parse_content_metadata(&[2, 0xFF, 0xFF]).unwrap();
+
+        // TYPE=0x01 (BIP) - BIP=0 represents None
+        let (_, c) = parse_content_metadata(&[0x01, 0x00, 0x00]).unwrap();
+        assert_eq!(c, Content::None);
+
+        // TYPE=0x01 (BIP) - Arbitrary BIPs
+        let (_, c) = parse_content_metadata(&[0x01, 0xFF, 0xFF]).unwrap();
         assert_eq!(c, Content::BIP(u16::MAX));
-        let (_, c) = parse_content_metadata(&[2, 0, 0]).unwrap();
-        assert_eq!(c, Content::BIP(0));
-        // Proprietary
-        let (_, c) = parse_content_metadata(&[3, 0, 0, 0]).unwrap();
-        assert_eq!(c, Content::Proprietary(vec![0, 0, 0]));
+
+        // TYPE=0x02 (Vendor) - 3 bytes of data
+        let (offset, c) = parse_content_metadata(&[0x02, 0x03, 0xAA, 0xBB, 0xCC]).unwrap();
+        assert_eq!(offset, 5); // 1 (TYPE) + 1 (LENGTH) + 3 (DATA)
+        assert_eq!(c, Content::Proprietary(vec![0xAA, 0xBB, 0xCC]));
     }
 
     #[test]
     fn test_parse_content_metadata_insufficient_bytes() {
-        // LENGTH=2 but only 1 byte follows (should need 2 bytes for BIP number)
-        let result = parse_content_metadata(&[2, 0x01]);
+        // TYPE=0x01 but only 1 byte follows (needs 2 bytes for BIP number)
+        let result = parse_content_metadata(&[0x01, 0x01]);
         assert_eq!(result, Err(Error::ContentMetadata));
 
-        // LENGTH=3 but only 2 bytes follow (should need 3 bytes for proprietary)
-        let result = parse_content_metadata(&[3, 0xAA, 0xBB]);
+        // TYPE=0x02 but insufficient data
+        let result = parse_content_metadata(&[0x02, 0x03, 0xAA, 0xBB]);
         assert_eq!(result, Err(Error::ContentMetadata));
 
-        // LENGTH=5 but only 3 bytes follow
-        let result = parse_content_metadata(&[5, 0xAA, 0xBB, 0xCC]);
-        assert_eq!(result, Err(Error::ContentMetadata));
-
-        // Edge case: LENGTH=255 (reserved) but even if it weren't, insufficient bytes
-        let result = parse_content_metadata(&[255, 0xAA]);
+        // TYPE=0x00 (Reserved) - always rejected
+        let result = parse_content_metadata(&[0x00, 0xAA]);
         assert_eq!(result, Err(Error::ContentReserved));
     }
 
     #[test]
     fn test_parse_content_metadata_exact_bytes() {
-        // LENGTH=3 with exactly 3 bytes - should succeed
-        let (offset, content) = parse_content_metadata(&[3, 0xAA, 0xBB, 0xCC]).unwrap();
-        assert_eq!(offset, 4); // 1 (LENGTH) + 3 (data)
+        // TYPE=0x02 (Vendor) with exactly 3 bytes data
+        let (offset, content) = parse_content_metadata(&[0x02, 0x03, 0xAA, 0xBB, 0xCC]).unwrap();
+        assert_eq!(offset, 5); // 1 (TYPE) + 1 (LENGTH) + 3 (DATA)
         assert_eq!(content, Content::Proprietary(vec![0xAA, 0xBB, 0xCC]));
 
-        // LENGTH=2 with exactly 2 bytes - should succeed for BIP number
-        let (offset, content) = parse_content_metadata(&[2, 0x01, 0x7C]).unwrap();
+        // TYPE=0x01 (BIP) - BIP380
+        let (offset, content) = parse_content_metadata(&[0x01, 0x01, 0x7C]).unwrap();
         assert_eq!(offset, 3);
         assert_eq!(content, Content::Bip380);
     }
 
     #[test]
-    fn test_parse_content_metadata_reserved_0xff() {
-        // LENGTH=0xFF is reserved and should be rejected
-        let mut bytes = vec![0xFF];
-        // Add 255 bytes of data (what 0xFF would indicate if it were valid)
-        bytes.extend(vec![0xAA; 255]);
+    fn test_parse_content_metadata_type_boundaries() {
+        // TYPE >= 0x80 should return error (unknown required type)
+        let result = parse_content_metadata(&[0x80, 0xAA, 0xBB]);
+        assert_eq!(result, Err(Error::ContentMetadata));
 
-        let result = parse_content_metadata(&bytes);
-        assert_eq!(result, Err(Error::ContentReserved));
+        let result = parse_content_metadata(&[0xFF, 0xAA, 0xBB]);
+        assert_eq!(result, Err(Error::ContentMetadata));
 
-        // Even with insufficient bytes, should still reject 0xFF
-        let result = parse_content_metadata(&[0xFF, 0xAA]);
-        assert_eq!(result, Err(Error::ContentReserved));
-
-        // 0xFE (254) should still work as proprietary
-        let mut bytes = vec![0xFE];
-        bytes.extend(vec![0xBB; 254]);
-        let (offset, content) = parse_content_metadata(&bytes).unwrap();
-        assert_eq!(offset, 255); // 1 + 254
-        assert_eq!(content, Content::Proprietary(vec![0xBB; 254]));
+        // TYPE < 0x80 (unknown, 0x03..0x7F) should skip LENGTH bytes
+        let (offset, content) = parse_content_metadata(&[0x03, 0x02, 0xAA, 0xBB]).unwrap();
+        assert_eq!(offset, 4); // 1 (TYPE) + 1 (LENGTH) + 2 (skipped DATA)
+        assert_eq!(content, Content::Unknown);
     }
 
     #[test]
     fn test_serialize_content() {
-        // Proprietary
+        // v1 TYPE-based serialization
+        // Proprietary -> TYPE=0x02, LENGTH, DATA
         let mut c = Content::Proprietary(vec![0, 0, 0]);
         let mut serialized: Vec<u8> = c.into();
-        assert_eq!(serialized, vec![3, 0, 0, 0]);
-        // BIP 380
+        assert_eq!(serialized, vec![0x02, 0x03, 0, 0, 0]); // TYPE=0x02, LENGTH=3, DATA
+
+        // BIP 380 -> TYPE=0x01, BIP_NUMBER
         c = Content::Bip380;
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x7C]);
+        assert_eq!(serialized, vec![0x01, 0x01, 0x7C]);
+
         c = Content::BIP(380);
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x7C]);
-        // BIP 388
+        assert_eq!(serialized, vec![0x01, 0x01, 0x7C]);
+        // BIP 388 -> TYPE=0x01, BIP_NUMBER
         c = Content::Bip388;
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x84]);
+        assert_eq!(serialized, vec![0x01, 0x01, 0x84]);
         c = Content::BIP(388);
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x84]);
-        // BIP 329
+        assert_eq!(serialized, vec![0x01, 0x01, 0x84]);
+        // BIP 329 -> TYPE=0x01, BIP_NUMBER
         c = Content::Bip329;
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x49]);
+        assert_eq!(serialized, vec![0x01, 0x01, 0x49]);
         c = Content::BIP(329);
         serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x49]);
+        assert_eq!(serialized, vec![0x01, 0x01, 0x49]);
     }
 
     #[test]
@@ -1404,7 +1462,7 @@ mod tests {
 
         let (_, individual_secrets, encryption_type, nonce, cyphertext) =
             decode_v1(&bytes).unwrap();
-        assert_eq!(encryption_type, 0x01);
+        assert_eq!(encryption_type, 0x02); // v1: AesGcm256 = 0x02
 
         let (content, decrypted_1) =
             decrypt_aes_gcm_256_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
@@ -1598,7 +1656,6 @@ mod individual_secrets_vectors {
 mod encryption_secret {
     use super::*;
     use alloc::{string::String, vec::Vec};
-    use core::str::FromStr;
 
     const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/encryption_secret.json");
 
@@ -1617,15 +1674,15 @@ mod encryption_secret {
         for v in vectors {
             let description = &v.description;
 
-            // Parse public keys
-            let keys: Vec<secp256k1::PublicKey> = v
+            // v1: Parse keys as x-only (32-byte) directly from hex
+            let mut raw_keys: Vec<[u8; 32]> = v
                 .keys
                 .iter()
-                .map(|hex_str| secp256k1::PublicKey::from_str(hex_str).expect(description))
+                .map(|hex_str| {
+                    let bytes = hex::decode(hex_str).expect(description);
+                    bytes.try_into().expect("key must be 32 bytes")
+                })
                 .collect();
-
-            // Convert to raw bytes and sort
-            let mut raw_keys: Vec<[u8; 33]> = keys.iter().map(|k| k.serialize()).collect();
             raw_keys.sort();
             raw_keys.dedup();
 
@@ -1683,7 +1740,7 @@ mod encryption_secret {
             for (i, raw_key) in raw_keys.iter().enumerate() {
                 let individual_sec = computed_individual_secrets[i];
 
-                // Compute Si = SHA256("BEB_BACKUP_INDIVIDUAL_SECRET" || key)
+                // Compute Si = SHA256("BIP_XXXX_INDIVIDUAL_SECRET" || key)
                 let mut engine = sha256::HashEngine::default();
                 engine.input(INDIVIDUAL_SECRET.as_bytes());
                 engine.input(raw_key);
@@ -1805,10 +1862,18 @@ mod encrypted_backup {
                 .ok()
                 .unwrap_or_else(|| panic!("Failed to parse content for: {}", description));
 
+            // v1: Keys in test vectors are x-only (32 bytes)
+            // Convert to secp256k1::PublicKey by adding parity
             let keys: Vec<secp256k1::PublicKey> = v
                 .keys
                 .iter()
-                .map(|s| secp256k1::PublicKey::from_str(s).expect(description))
+                .map(|hex_str| {
+                    let xonly_bytes = hex::decode(hex_str).expect(description);
+                    let xonly_arr: [u8; 32] = xonly_bytes.try_into().expect("key must be 32 bytes");
+                    let xonly = miniscript::bitcoin::XOnlyPublicKey::from_slice(&xonly_arr)
+                        .expect(description);
+                    secp256k1::PublicKey::from_x_only_public_key(xonly, secp256k1::Parity::Even)
+                })
                 .collect();
 
             let mut derivation_paths: Vec<DerivationPath> = v
@@ -1926,20 +1991,217 @@ mod content_vectors {
             }
         }
 
+        // Expected parsed content from test vectors (only valid entries)
+        // Test vectors with valid: true are:
+        // - "BIP 380", "BIP 388", "BIP 329", "BIP 999", "BIP max (65535)", "BIP min (0)"
+        // - "Vendor-specific 00010203", "Vendor-specific empty"
+        // - "Unknown TYPE < 0x80 with valid LENGTH skipped"
         let expected = vec![
-            (Content::None, "None".to_string()),
-            (Content::Bip380, "Bip 380".to_string()),
-            (Content::Bip388, "Bip 388".to_string()),
-            (Content::Bip329, "Bip 329".to_string()),
-            (Content::BIP(999), "Bip 999".to_string()),
-            (Content::BIP(65535), "Bip max".to_string()),
-            (Content::BIP(0), "Bip min".to_string()),
+            (Content::Bip380, "BIP 380".to_string()),
+            (Content::Bip388, "BIP 388".to_string()),
+            (Content::Bip329, "BIP 329".to_string()),
+            (Content::BIP(999), "BIP 999".to_string()),
+            (Content::BIP(65535), "BIP max (65535)".to_string()),
+            (Content::None, "BIP min (0)".to_string()), // BIP=0 maps to None
             (
                 Content::Proprietary(vec![0x00, 0x01, 0x02, 0x03]),
-                "Propietary 00010203".to_string(),
+                "Vendor-specific 00010203".to_string(),
+            ),
+            (
+                Content::Proprietary(vec![]),
+                "Vendor-specific empty".to_string(),
+            ),
+            (
+                Content::Unknown,
+                "Unknown TYPE < 0x80 with valid LENGTH skipped".to_string(),
             ),
         ];
 
         assert_eq!(parsed, expected);
+    }
+}
+
+#[cfg(all(test, feature = "rand"))]
+mod generate_values {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[test]
+    #[ignore] // Run with: cargo test generate_expected_values -- --ignored --nocapture
+    fn generate_expected_values() {
+        println!("\n=== Generating encryption_secret.json values ===\n");
+
+        let test_keys: Vec<Vec<&str>> = vec![
+            vec!["e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443"],
+            vec![
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+            ],
+            vec![
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+                "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+            ],
+            // Same as above but different input order (should produce same result after sorting)
+            vec![
+                "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+            ],
+            vec![
+                "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+                "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+            ],
+            // Two keys in different order
+            vec![
+                "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+            ],
+            // Duplicate keys
+            vec![
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+            ],
+        ];
+
+        for (i, key_strs) in test_keys.iter().enumerate() {
+            let mut raw_keys: Vec<[u8; 32]> = key_strs
+                .iter()
+                .map(|s| {
+                    let bytes = hex::decode(s).unwrap();
+                    bytes.try_into().unwrap()
+                })
+                .collect();
+            raw_keys.sort();
+            raw_keys.dedup();
+
+            let secret = decryption_secret(&raw_keys);
+            let ind_secrets = individual_secrets(&secret, &raw_keys);
+
+            println!("Test case {} ({} unique keys):", i + 1, raw_keys.len());
+            println!("  decryption_secret: \"{}\"", hex::encode(secret.as_byte_array()));
+            println!("  individual_secrets:");
+            for is in &ind_secrets {
+                println!("    \"{}\"", hex::encode(is));
+            }
+            println!();
+        }
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test generate_encrypted_backup_values -- --ignored --nocapture
+    fn generate_encrypted_backup_values() {
+        use crate::DerivationPath;
+
+        println!("\n=== Generating encrypted_backup.json values ===\n");
+
+        struct TestCase {
+            description: &'static str,
+            content_hex: &'static str,
+            keys_hex: Vec<&'static str>,
+            derivation_paths: Vec<&'static str>,
+            plaintext: &'static str,
+            nonce_hex: &'static str,
+        }
+
+        let test_cases = vec![
+            TestCase {
+                description: "Single key, no derivation paths, BIP380 content",
+                content_hex: "01017c",
+                keys_hex: vec!["e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443"],
+                derivation_paths: vec![],
+                plaintext: "00",
+                nonce_hex: "a1b2c3d4e5f607080910a1b2",
+            },
+            TestCase {
+                description: "Two keys, 1 derivation path, BIP380 content",
+                content_hex: "01017c",
+                keys_hex: vec![
+                    "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                    "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+                ],
+                derivation_paths: vec!["m/48'/1'/0'/2'"],
+                plaintext: "wsh(or_d(pk([9d69155f/48'/1'/0'/2']tpubDDxT9mkZzWwkKwpGT5fY6iiM9muYTPkTx6Eig8dpHR7TChuGGCWYAHVmpW1ciido5RiFWwjzYsF1GZHkEHg2nrYp3zNtx3QQRkznyLhQ77x/<0;1>/*),and_v(v:pkh([9d69155f/48'/1'/0'/2']tpubDDxT9mkZzWwkKwpGT5fY6iiM9muYTPkTx6Eig8dpHR7TChuGGCWYAHVmpW1ciido5RiFWwjzYsF1GZHkEHg2nrYp3zNtx3QQRkznyLhQ77x/<2;3>/*),older(52596))))#gx5f42wh",
+                nonce_hex: "0102030405060708090a0b0c",
+            },
+            TestCase {
+                description: "Three keys, multiple derivation paths, BIP329 content",
+                content_hex: "010149",
+                keys_hex: vec![
+                    "e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443",
+                    "84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07",
+                    "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+                ],
+                derivation_paths: vec!["m/84'/0'/0'", "m/0/1'/2/3'"],
+                plaintext: "{\"type\":\"tx\",\"ref\":\"f91d0a8a78462bc59398f2c5d7a84fcff491c26ba54c4833478b202796c8aafd\",\"label\":\"Transaction\",\"origin\":\"wpkh([d34db33f/84'/0'/0'])\"}\n{\"type\":\"addr\",\"ref\":\"bc1q34aq5drpuwy3wgl9lhup9892qp6svr8ldzyy7c\",\"label\":\"Address\"}\n{\"type\":\"pubkey\",\"ref\":\"0283409659355b6d1cc3c32decd5d561abaac86c37a353b52895a5e6c196d6f448\",\"label\":\"Public Key\"}\n{\"type\":\"input\",\"ref\":\"f91d0a8a78462bc59398f2c5d7a84fcff491c26ba54c4833478b202796c8aafd:0\",\"label\":\"Input\"}\n{\"type\":\"output\",\"ref\":\"f91d0a8a78462bc59398f2c5d7a84fcff491c26ba54c4833478b202796c8aafd:1\",\"label\":\"Output\",\"spendable\":false}\n{\"type\":\"xpub\",\"ref\":\"xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8\",\"label\":\"Extended Public Key\"}\n{\"type\":\"tx\",\"ref\":\"f546156d9044844e02b181026a1a407abfca62e7ea1159f87bbeaa77b4286c74\",\"label\":\"Account #1 Transaction\",\"origin\":\"wpkh([d34db33f/84'/0'/1'])\"}",
+                nonce_hex: "deadbeefcafebabe12345678",
+            },
+            TestCase {
+                description: "Single key, vendor-specific content (4 bytes)",
+                content_hex: "0204deadbeef",
+                keys_hex: vec!["e6642fd69bd211f93f7f1f36ca51a26a5290eb2dd1b0d8279a87bb0d480c8443"],
+                derivation_paths: vec![],
+                plaintext: "plaintext",
+                nonce_hex: "000102030405060708090a0b",
+            },
+        ];
+
+        for tc in test_cases {
+            println!("Test case: {}", tc.description);
+
+            // Parse keys as x-only public keys
+            let mut raw_keys: Vec<[u8; 32]> = tc.keys_hex
+                .iter()
+                .map(|s| {
+                    let bytes = hex::decode(s).unwrap();
+                    bytes.try_into().unwrap()
+                })
+                .collect();
+
+            // Sort and dedup keys
+            raw_keys.sort();
+            raw_keys.dedup();
+
+            // Parse content
+            let content_bytes = hex::decode(tc.content_hex).unwrap();
+            let (_, content) = parse_content_metadata(&content_bytes).unwrap();
+
+            // Parse derivation paths
+            let derivation_paths: Vec<DerivationPath> = tc.derivation_paths
+                .iter()
+                .map(|s| s.parse().unwrap())
+                .collect();
+
+            // Plaintext is treated as a raw string (same as test code)
+            let plaintext = tc.plaintext.as_bytes().to_vec();
+
+            // Parse nonce
+            let nonce: [u8; 12] = hex::decode(tc.nonce_hex).unwrap().try_into().unwrap();
+
+            // Convert x-only keys to secp256k1::PublicKey (add 0x02 prefix)
+            let pks: Vec<secp256k1::PublicKey> = tc.keys_hex
+                .iter()
+                .map(|s| {
+                    let x_only = hex::decode(s).unwrap();
+                    let mut compressed = vec![0x02];
+                    compressed.extend(&x_only);
+                    secp256k1::PublicKey::from_slice(&compressed).unwrap()
+                })
+                .collect();
+
+            // Encrypt
+            let encrypted = encrypt_aes_gcm_256_v1_with_nonce(
+                derivation_paths,
+                content.clone(),
+                pks,
+                &plaintext,
+                nonce,
+            )
+            .unwrap();
+
+            println!("  expected: \"{}\"", hex::encode(&encrypted));
+            println!();
+        }
     }
 }
