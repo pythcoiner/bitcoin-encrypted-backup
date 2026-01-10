@@ -269,9 +269,40 @@ impl EncryptedBackup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encryption {
     Undefined,
+    ChaCha20Poly1305,
     AesGcm256,
     Unknown,
 }
+
+// ============== v0 byte mapping (0x00=Undefined, 0x01=AesGcm256) ==============
+
+impl Encryption {
+    pub fn from_byte_v0(value: u8) -> Self {
+        match value {
+            0 => Self::Undefined,
+            1 => Self::AesGcm256,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn to_byte_v0(self) -> u8 {
+        match self {
+            Encryption::Undefined => 0x00,
+            Encryption::AesGcm256 => 0x01,
+            Encryption::ChaCha20Poly1305 => 0xFF, // Not supported in v0
+            Encryption::Unknown => 0xFF,
+        }
+    }
+
+    pub fn is_defined(&self) -> bool {
+        match self {
+            Encryption::Undefined | Encryption::Unknown => false,
+            Encryption::ChaCha20Poly1305 | Encryption::AesGcm256 => true,
+        }
+    }
+}
+
+// ============== v1 byte mapping ==============
 
 impl From<u8> for Encryption {
     fn from(value: u8) -> Self {
@@ -288,16 +319,8 @@ impl From<Encryption> for u8 {
         match value {
             Encryption::Undefined => 0x00,
             Encryption::AesGcm256 => 0x01,
+            Encryption::ChaCha20Poly1305 => 0xFF, // Not yet mapped in v1
             Encryption::Unknown => 0xFF,
-        }
-    }
-}
-
-impl Encryption {
-    pub fn is_defined(&self) -> bool {
-        match self {
-            Encryption::Undefined | Encryption::Unknown => false,
-            Encryption::AesGcm256 => true,
         }
     }
 }

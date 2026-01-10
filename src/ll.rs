@@ -22,8 +22,14 @@ use rand::{rngs::OsRng, TryRngCore};
 
 use crate::{descriptor::bip341_nums, Encryption, Version};
 
-const DECRYPTION_SECRET: &str = "BEB_BACKUP_DECRYPTION_SECRET";
-const INDIVIDUAL_SECRET: &str = "BEB_BACKUP_INDIVIDUAL_SECRET";
+// v0 constants
+const DECRYPTION_SECRET_V0: &str = "BEB_BACKUP_DECRYPTION_SECRET";
+const INDIVIDUAL_SECRET_V0: &str = "BEB_BACKUP_INDIVIDUAL_SECRET";
+
+// v1 constants
+const DECRYPTION_SECRET: &str = "BIPXXXX_DECRYPTION_SECRET";
+const INDIVIDUAL_SECRET: &str = "BIPXXXX_INDIVIDUAL_SECRET";
+
 const MAGIC: &str = "BEB";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +69,76 @@ pub enum Content {
     Proprietary(Vec<u8>),
     Unknown,
 }
+
+// ============== v0 content encoding (LENGTH-based) ==============
+
+impl Content {
+    /// v0 encoding: LENGTH-based format
+    /// - <LENGTH == 0> => None
+    /// - <LENGTH == 2><BIP_NUMBER> => encoding format defined in BIP<BIP_NUMBER>
+    /// - <LENGTH > 2> => proprietary
+    pub fn to_bytes_v0(&self) -> Vec<u8> {
+        match self {
+            Content::None => [0].into(),
+            Content::Proprietary(data) => {
+                assert!(data.len() > 2);
+                assert!(data.len() < u8::MAX as usize);
+                let mut content = vec![data.len() as u8];
+                content.append(&mut data.clone());
+                content
+            }
+            Content::Unknown => unimplemented!(),
+            c => {
+                let mut content = vec![2];
+                let bip_number = match c {
+                    Content::Bip380 => 380u16.to_be_bytes(),
+                    Content::Bip388 => 388u16.to_be_bytes(),
+                    Content::Bip329 => 329u16.to_be_bytes(),
+                    Content::BIP(bip) => bip.to_be_bytes(),
+                    _ => unreachable!(),
+                };
+                content.append(&mut bip_number.to_vec());
+                content
+            }
+        }
+    }
+}
+
+/// v0 parsing: LENGTH-based format
+pub fn parse_content_metadata_v0(bytes: &[u8]) -> Result<(usize, Content), Error> {
+    let len = bytes.len();
+    if len == 0 {
+        Err(Error::ContentMetadataEmpty)?
+    }
+    let data_len = bytes[0];
+    match data_len {
+        0 => Ok((1, Content::None)),
+        1 => Err(Error::ContentMetadata),
+        2 => {
+            if bytes.len() < 3 {
+                return Err(Error::ContentMetadata);
+            }
+            let bip_number = u16::from_be_bytes(bytes[1..3].try_into().expect("len ok"));
+            match bip_number {
+                380 => Ok((3, Content::Bip380)),
+                388 => Ok((3, Content::Bip388)),
+                329 => Ok((3, Content::Bip329)),
+                bip_number => Ok((3, Content::BIP(bip_number))),
+            }
+        }
+        255 => Err(Error::ContentReserved),
+        len => {
+            if bytes.len() < (len as usize + 1) {
+                return Err(Error::ContentMetadata);
+            }
+            let end = (len as usize + 1).min(bytes.len());
+            let data = &bytes[1..end].to_vec();
+            Ok((end, Content::Proprietary(data.to_vec())))
+        }
+    }
+}
+
+// ============== v1 content encoding (will be updated to TYPE-based) ==============
 
 /// Encode content metadata, 3 variants:
 /// - <LENGTH == 0> => None
@@ -154,6 +230,31 @@ pub fn nonce() -> [u8; 12] {
         .expect("os rng must not fail");
     nonce
 }
+
+// ============== v0 secret functions (33-byte compressed keys) ==============
+
+pub fn decryption_secret_v0(keys: &[[u8; 33]]) -> sha256::Hash {
+    let mut engine = sha256::HashEngine::default();
+    engine.input(DECRYPTION_SECRET_V0.as_bytes());
+    keys.iter().for_each(|k| engine.input(k));
+    sha256::Hash::from_engine(engine)
+}
+
+pub fn individual_secret_v0(secret: &sha256::Hash, key: &[u8; 33]) -> [u8; 32] {
+    let mut engine = sha256::HashEngine::default();
+    engine.input(INDIVIDUAL_SECRET_V0.as_bytes());
+    engine.input(key);
+    let si = sha256::Hash::from_engine(engine);
+    xor(secret.as_byte_array(), si.as_byte_array())
+}
+
+pub fn individual_secrets_v0(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u8; 32]> {
+    keys.iter()
+        .map(|k| individual_secret_v0(secret, k))
+        .collect::<Vec<_>>()
+}
+
+// ============== v1 secret functions (33-byte compressed keys for now, will be updated) ==============
 
 pub fn decryption_secret(keys: &[[u8; 33]]) -> sha256::Hash {
     let mut engine = sha256::HashEngine::default();
@@ -494,6 +595,111 @@ pub fn decrypt_aes_gcm_256_v1(
             let mut offset = init_offset(&out, 0)?;
             // <CONTENT_METADATA>
             let (incr, content) = parse_content_metadata(&out)?;
+            // <DECRYPTED_PAYLOAD>
+            offset = increment_offset(&out, offset, incr)?;
+            let out = out[offset..].to_vec();
+            return Ok((content, out));
+        }
+    }
+
+    Err(Error::WrongKey)
+}
+
+// ============== v0 encrypt/decrypt functions (33-byte compressed keys, LENGTH-based content) ==============
+
+fn encrypt_aes_gcm_256_v0_with_nonce(
+    derivation_paths: Vec<DerivationPath>,
+    content_metadata: Content,
+    keys: Vec<secp256k1::PublicKey>,
+    data: &[u8],
+    nonce: [u8; 12],
+) -> Result<Vec<u8>, Error> {
+    // drop duplicates keys and sort out bip341 nums
+    let keys = keys
+        .into_iter()
+        .filter(|k| *k != bip341_nums())
+        .collect::<BTreeSet<_>>();
+
+    // drop duplicates derivation paths
+    let derivation_paths = derivation_paths
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if keys.len() > u8::MAX as usize || keys.is_empty() {
+        return Err(Error::KeyCount);
+    }
+    if derivation_paths.len() > u8::MAX as usize {
+        return Err(Error::DerivPathCount);
+    }
+    if data.len() > u32::MAX as usize {
+        return Err(Error::DataLength);
+    }
+    if data.is_empty() {
+        return Err(Error::DataLength);
+    }
+
+    let content_metadata: Vec<u8> = content_metadata.to_bytes_v0();
+    if content_metadata.is_empty() {
+        return Err(Error::ContentMetadata);
+    }
+
+    let mut raw_keys = keys.into_iter().map(|k| k.serialize()).collect::<Vec<_>>();
+    raw_keys.sort();
+
+    let secret = decryption_secret_v0(&raw_keys);
+    let individual_secrets =
+        encode_individual_secrets(&individual_secrets_v0(&secret, raw_keys.as_slice()))?;
+    let derivation_paths = encode_derivation_paths(derivation_paths)?;
+
+    // <PAYLOAD> = <CONTENT_METADATA><DATA>
+    let mut payload = content_metadata;
+    payload.append(&mut data.to_vec());
+
+    let (nonce, cyphertext) = encrypt_with_nonce(secret, payload.to_vec(), nonce)?;
+    let encrypted_payload = encode_encrypted_payload(nonce, cyphertext.as_slice())?;
+
+    Ok(encode_v1(
+        Version::V1.into(),
+        derivation_paths,
+        individual_secrets,
+        Encryption::AesGcm256.into(),
+        encrypted_payload,
+    ))
+}
+
+pub fn encrypt_aes_gcm_256_v0(
+    derivation_paths: Vec<DerivationPath>,
+    content_metadata: Content,
+    keys: Vec<secp256k1::PublicKey>,
+    data: &[u8],
+    #[cfg(not(feature = "rand"))] nonce: [u8; 12],
+) -> Result<Vec<u8>, Error> {
+    #[cfg(feature = "rand")]
+    let nonce = nonce();
+    encrypt_aes_gcm_256_v0_with_nonce(derivation_paths, content_metadata, keys, data, nonce)
+}
+
+pub fn decrypt_aes_gcm_256_v0(
+    key: secp256k1::PublicKey,
+    individual_secrets: &Vec<[u8; 32]>,
+    cyphertext: Vec<u8>,
+    nonce: [u8; 12],
+) -> Result<(Content, Vec<u8>), Error> {
+    let raw_key = key.serialize();
+
+    let mut engine = sha256::HashEngine::default();
+    engine.input(INDIVIDUAL_SECRET_V0.as_bytes());
+    engine.input(&raw_key);
+    let si = sha256::Hash::from_engine(engine);
+
+    for ci in individual_secrets {
+        let secret = xor(si.as_byte_array(), ci);
+        if let Some(out) = try_decrypt_aes_gcm_256(&cyphertext, &secret, nonce) {
+            let mut offset = init_offset(&out, 0)?;
+            // <CONTENT_METADATA>
+            let (incr, content) = parse_content_metadata_v0(&out)?;
             // <DECRYPTED_PAYLOAD>
             offset = increment_offset(&out, offset, incr)?;
             let out = out[offset..].to_vec();
