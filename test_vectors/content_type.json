@@ -1,77 +1,82 @@
 [
   {
-    "description": "None",
+    "description": "BIP 380",
     "valid": true,
-    "content": "00"
+    "content": "01017c"
   },
   {
-    "description": "Bip 380",
+    "description": "BIP 388",
     "valid": true,
-    "content": "02017c"
+    "content": "010184"
   },
   {
-    "description": "Bip 388",
+    "description": "BIP 329",
     "valid": true,
-    "content": "020184"
+    "content": "010149"
   },
   {
-    "description": "Bip 329",
+    "description": "BIP 999",
     "valid": true,
-    "content": "020149"
+    "content": "0103e7"
   },
   {
-    "description": "Bip 999",
+    "description": "BIP max (65535)",
     "valid": true,
-    "content": "0203e7"
+    "content": "01ffff"
   },
   {
-    "description": "Bip max",
+    "description": "BIP min (0)",
     "valid": true,
-    "content": "02ffff"
+    "content": "010000"
   },
   {
-    "description": "Bip min",
+    "description": "Vendor-specific 00010203",
     "valid": true,
-    "content": "020000"
+    "content": "020400010203"
   },
   {
-    "description": "Propietary 00010203",
+    "description": "Vendor-specific empty",
     "valid": true,
-    "content": "0400010203"
-  },
-  {
-    "description": "Invalid BIP",
-    "valid": false,
     "content": "0200"
   },
   {
-    "description": "Invalid proprietary",
-    "valid": false,
-    "content": "0300"
+    "description": "Unknown TYPE < 0x80 with valid LENGTH skipped",
+    "valid": true,
+    "content": "03020000"
   },
   {
-    "description": "Invalid proprietary",
+    "description": "TYPE 0x00 is reserved",
     "valid": false,
-    "content": "030000"
+    "content": "00"
   },
   {
-    "description": "Starting with 0xFF is reserved",
+    "description": "TYPE 0x00 is reserved with extra bytes",
+    "valid": false,
+    "content": "00000000"
+  },
+  {
+    "description": "TYPE 0xFF is reserved",
     "valid": false,
     "content": "ff"
   },
   {
-    "description": "Starting with 0xFF is reserved",
+    "description": "TYPE 0xFF is reserved with extra bytes",
     "valid": false,
     "content": "ff000000"
   },
   {
-    "description": "Starting with 0x01 is invalid",
-    "valid": false,
-    "content": "01"
-  },
-  {
-    "description": "Starting with 0x01 is invalid",
+    "description": "BIP without enough bytes for number",
     "valid": false,
     "content": "0100"
+  },
+  {
+    "description": "Vendor-specific without LENGTH",
+    "valid": false,
+    "content": "02"
+  },
+  {
+    "description": "Vendor-specific with LENGTH but insufficient data",
+    "valid": false,
+    "content": "020400"
   }
 ]
