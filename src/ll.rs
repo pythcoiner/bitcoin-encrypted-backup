@@ -22,9 +22,9 @@ use rand::{rngs::OsRng, TryRngCore};
 
 use crate::{descriptor::bip341_nums, Encryption, Version};
 
-const DECRYPTION_SECRET: &str = "BEB_BACKUP_DECRYPTION_SECRET";
-const INDIVIDUAL_SECRET: &str = "BEB_BACKUP_INDIVIDUAL_SECRET";
-const MAGIC: &str = "BEB";
+const DECRYPTION_SECRET: &str = "BIPXXX_DECRYPTION_SECRET";
+const INDIVIDUAL_SECRET: &str = "BIPXXX_INDIVIDUAL_SECRET";
+const MAGIC: &str = "BIPXXX";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -64,67 +64,106 @@ pub enum Content {
     Unknown,
 }
 
-/// Encode content metadata, 3 variants:
-/// - <LENGTH == 0> => None
-/// - <LENGTH == 2><BIP_NUMBER> => encoding format defined in BIP<BIP_NUMBER>
-/// - <LENGTH > 2> => proprietary
-impl From<Content> for Vec<u8> {
-    fn from(value: Content) -> Self {
-        match value {
-            Content::None => [0].into(),
-            Content::Proprietary(mut data) => {
-                assert!(data.len() > 2);
-                assert!(data.len() < u8::MAX as usize);
-                let mut content = vec![data.len() as u8];
-                content.append(&mut data);
-                content
+// `CONTENT` is a variable length field defining the type of `PLAINTEXT` being encrypted,
+// it follows this format:
+//
+// `TYPE` (`LENGTH`) `DATA`
+//
+// `TYPE`: 1-byte unsigned integer identifying how to interpret `DATA`.
+//
+// | Value  | Definition                             |
+// |:-------|:---------------------------------------|
+// | 0x00   | Reserved                               |
+// | 0x01   | BIP Number (big-endian uint16)         |
+// | 0x02   | Vendor-Specific Opaque Tag             |
+//
+// `LENGTH`: variable-length integer representing the length of `DATA` in bytes.
+//
+// For all `TYPE` values except `0x01`, `LENGTH` MUST be present.
+//
+// `DATA`: variable-length field whose encoding depends on `TYPE`.
+//
+// For `TYPE` values defined above:
+// - 0x00: parsers MUST reject the payload.
+// - 0x01: `LENGTH` MUST be omitted and `DATA` is a 2-byte big-endian unsigned integer representing the BIP number that defines it.
+// - 0x02: `DATA` MUST be `LENGTH` bytes of opaque, vendor-specific data.
+//
+// For all `TYPE` values except `0x01`, parsers MUST reject `CONTENT` if `LENGTH` exceeds the remaining payload bytes.
+//
+// Parsers MUST skip unknown `TYPE` values less than `0x80`, by consuming `LENGTH` bytes of `DATA`.
+//
+// For unknown `TYPE` values greater than or equal to `0x80`, it MUST stop parsing `CONTENT`.
+const CONTENT_RESERVED: u8 = 0x00;
+const CONTENT_BIP: u8 = 0x01;
+const CONTENT_PROPRIETARY: u8 = 0x02;
+const CONTENT_UPGRADE: u8 = 0x80;
+impl TryFrom<Content> for Vec<u8> {
+    type Error = ();
+    fn try_from(value: Content) -> Result<Self, ()> {
+        let mut out = match &value {
+            Content::Unknown | Content::None => return Err(()),
+            Content::Bip380 | Content::Bip388 | Content::Bip329 | Content::BIP(_) => {
+                vec![CONTENT_BIP]
             }
-            Content::Unknown => unimplemented!(),
-            c => {
-                let mut content = vec![2];
-                let bip_number = match c {
-                    Content::Bip380 => 380u16.to_be_bytes(),
-                    Content::Bip388 => 388u16.to_be_bytes(),
-                    Content::Bip329 => 329u16.to_be_bytes(),
-                    Content::BIP(bip) => bip.to_be_bytes(),
-                    _ => unreachable!(),
-                };
-                content.append(&mut bip_number.to_vec());
-                content
+            Content::Proprietary(_) => vec![CONTENT_PROPRIETARY],
+        };
+        let mut len = match &value {
+            Content::Proprietary(d) => {
+                bitcoin::consensus::serialize(&bitcoin::VarInt(d.len() as u64))
             }
-        }
+            _ => vec![],
+        };
+        out.append(&mut len);
+        let mut data = match value {
+            Content::None | Content::Unknown => vec![],
+            Content::Bip380 => 380u16.to_be_bytes().to_vec(),
+            Content::Bip388 => 388u16.to_be_bytes().to_vec(),
+            Content::Bip329 => 329u16.to_be_bytes().to_vec(),
+            Content::BIP(bip) => bip.to_be_bytes().to_vec(),
+            Content::Proprietary(d) => d,
+        };
+        out.append(&mut data);
+        Ok(out)
     }
 }
 
-pub fn parse_content_metadata(bytes: &[u8]) -> Result<(usize, Content), Error> {
+pub fn parse_content(bytes: &[u8]) -> Result<(usize, Content), Error> {
     let len = bytes.len();
-    if len == 0 {
-        Err(Error::ContentMetadataEmpty)?
-    }
-    let data_len = bytes[0];
-    match data_len {
-        0 => Ok((1, Content::None)),
-        1 => Err(Error::ContentMetadata),
-        2 => {
-            if bytes.len() < 3 {
+    init_offset(bytes, 0)?;
+    match bytes[0] {
+        CONTENT_RESERVED => Err(Error::ContentReserved),
+        CONTENT_BIP => {
+            check_offset_lookahead(0, bytes, 3).map_err(|_| Error::ContentMetadata)?;
+            let bip_bytes: [u8; 2] = bytes[1..3].try_into().expect("2 bytes");
+            let bip = u16::from_be_bytes(bip_bytes);
+            let content = match bip {
+                380 => Content::Bip380,
+                388 => Content::Bip388,
+                329 => Content::Bip329,
+                b => Content::BIP(b),
+            };
+            Ok((3, content))
+        }
+        t if t < CONTENT_UPGRADE => {
+            let (VarInt(data_len), offset) =
+                parse_varint(&bytes[1..]).ok_or(Error::ContentMetadata)?;
+            let start = 1 + offset;
+            check_offset_lookahead(start, bytes, data_len as usize)?;
+            let end = start + data_len as usize;
+            if len < end {
                 return Err(Error::ContentMetadata);
             }
-            let bip_number = u16::from_be_bytes(bytes[1..3].try_into().expect("len ok"));
-            match bip_number {
-                380 => Ok((3, Content::Bip380)),
-                388 => Ok((3, Content::Bip388)),
-                329 => Ok((3, Content::Bip329)),
-                bip_number => Ok((3, Content::BIP(bip_number))),
+            if t == CONTENT_PROPRIETARY {
+                let data = bytes[offset + 1..end].to_vec();
+                Ok((end, Content::Proprietary(data)))
+            } else {
+                // Parsers MUST skip unknown `TYPE` values less than `0x80`, by consuming `LENGTH` bytes of `DATA`.
+                Ok((end, Content::Unknown))
             }
         }
-        255 => Err(Error::ContentReserved),
-        len => {
-            if bytes.len() < (len as usize + 1) {
-                return Err(Error::ContentMetadata);
-            }
-            let end = (len as usize + 1).min(bytes.len());
-            let data = &bytes[1..end].to_vec();
-            Ok((end, Content::Proprietary(data.to_vec())))
+        _ => {
+            // For unknown `TYPE` values greater than or equal to `0x80`, it MUST stop parsing `CONTENT`.
+            Err(Error::ContentMetadata)
         }
     }
 }
@@ -420,7 +459,9 @@ fn encrypt_aes_gcm_256_v1_with_nonce(
         return Err(Error::DataLength);
     }
 
-    let content_metadata: Vec<u8> = content_metadata.into();
+    let content_metadata: Vec<u8> = content_metadata
+        .try_into()
+        .map_err(|_| Error::ContentMetadata)?;
     if content_metadata.is_empty() {
         return Err(Error::ContentMetadata);
     }
@@ -493,7 +534,7 @@ pub fn decrypt_aes_gcm_256_v1(
         if let Some(out) = try_decrypt_aes_gcm_256(&cyphertext, &secret, nonce) {
             let mut offset = init_offset(&out, 0)?;
             // <CONTENT_METADATA>
-            let (incr, content) = parse_content_metadata(&out)?;
+            let (incr, content) = parse_content(&out)?;
             // <DECRYPTED_PAYLOAD>
             offset = increment_offset(&out, offset, incr)?;
             let out = out[offset..].to_vec();
@@ -626,8 +667,7 @@ pub fn parse_encrypted_payload(
     let nonce: [u8; 12] = bytes[offset..offset + 12].try_into().expect("checked");
     offset = increment_offset(bytes, offset, 12)?;
     // <LENGTH>
-    let (VarInt(data_len), incr) =
-        bitcoin::consensus::deserialize_partial(&bytes[offset..]).map_err(|_| Error::VarInt)?;
+    let (VarInt(data_len), incr) = parse_varint(&bytes[offset..]).ok_or(Error::VarInt)?;
     // FIXME: in 32bit systems usize is 32 bits
     let data_len = data_len as usize;
     offset = increment_offset(bytes, offset, incr)?;
@@ -635,6 +675,10 @@ pub fn parse_encrypted_payload(
     check_offset_lookahead(offset, bytes, data_len)?;
     let cyphertext = bytes[offset..offset + data_len].to_vec();
     Ok((nonce, cyphertext))
+}
+
+fn parse_varint(bytes: &[u8]) -> Option<(VarInt, usize)> {
+    bitcoin::consensus::deserialize_partial(bytes).ok()
 }
 
 #[cfg(all(test, feature = "rand"))]
@@ -715,11 +759,11 @@ mod tests {
 
     #[test]
     fn test_parse_magic() {
-        let magic = "BEB".as_bytes();
-        assert_eq!(MAGIC, "BEB");
+        let magic = "BIPXXX".as_bytes();
+        assert_eq!(MAGIC, "BIPXXX");
         let offset = parse_magic_byte(magic).unwrap();
         assert_eq!(offset, magic.len());
-        let res = parse_magic_byte("BOBt s".as_bytes());
+        let res = parse_magic_byte("BOBtst".as_bytes());
         assert_eq!(res, Err(Error::Magic));
         let _ = parse_magic_byte(MAGIC.as_bytes()).unwrap();
     }
@@ -802,112 +846,101 @@ mod tests {
     #[test]
     fn test_parse_content() {
         // empty bytes must fail
-        assert!(parse_content_metadata(&[]).is_err());
-        // None
-        let (_, c) = parse_content_metadata(&[0]).unwrap();
-        assert_eq!(c, Content::None);
-        // len == 1 fails
-        assert!(parse_content_metadata(&[1, 0]).is_err());
+        assert!(parse_content(&[]).is_err());
+        // TYPE 0x00 is reserved
+        assert_eq!(parse_content(&[0]), Err(Error::ContentReserved));
+        // BIP TYPE 0x01 requires 2 more bytes
+        assert!(parse_content(&[1, 0]).is_err());
         // BIP380
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x7c]).unwrap();
+        let (_, c) = parse_content(&[1, 0x01, 0x7c]).unwrap();
         assert_eq!(c, Content::Bip380);
         // BIP388
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x84]).unwrap();
+        let (_, c) = parse_content(&[1, 0x01, 0x84]).unwrap();
         assert_eq!(c, Content::Bip388);
         // BIP329
-        let (_, c) = parse_content_metadata(&[2, 0x01, 0x49]).unwrap();
+        let (_, c) = parse_content(&[1, 0x01, 0x49]).unwrap();
         assert_eq!(c, Content::Bip329);
         // Arbitrary BIPs
-        let (_, c) = parse_content_metadata(&[2, 0xFF, 0xFF]).unwrap();
+        let (_, c) = parse_content(&[1, 0xFF, 0xFF]).unwrap();
         assert_eq!(c, Content::BIP(u16::MAX));
-        let (_, c) = parse_content_metadata(&[2, 0, 0]).unwrap();
+        let (_, c) = parse_content(&[1, 0, 0]).unwrap();
         assert_eq!(c, Content::BIP(0));
-        // Proprietary
-        let (_, c) = parse_content_metadata(&[3, 0, 0, 0]).unwrap();
+        // Proprietary: TYPE=0x02, LENGTH=3, data=00 00 00
+        let (_, c) = parse_content(&[2, 3, 0, 0, 0]).unwrap();
         assert_eq!(c, Content::Proprietary(vec![0, 0, 0]));
     }
 
     #[test]
     fn test_parse_content_metadata_insufficient_bytes() {
-        // LENGTH=2 but only 1 byte follows (should need 2 bytes for BIP number)
-        let result = parse_content_metadata(&[2, 0x01]);
+        // BIP TYPE=0x01 needs 2 more bytes, only 1 provided
+        let result = parse_content(&[1, 0x01]);
         assert_eq!(result, Err(Error::ContentMetadata));
 
-        // LENGTH=3 but only 2 bytes follow (should need 3 bytes for proprietary)
-        let result = parse_content_metadata(&[3, 0xAA, 0xBB]);
-        assert_eq!(result, Err(Error::ContentMetadata));
+        // Proprietary TYPE=0x02 LENGTH=3 but only 2 bytes of data follow
+        let result = parse_content(&[2, 3, 0xAA, 0xBB]);
+        assert_eq!(result, Err(Error::Corrupted));
 
-        // LENGTH=5 but only 3 bytes follow
-        let result = parse_content_metadata(&[5, 0xAA, 0xBB, 0xCC]);
-        assert_eq!(result, Err(Error::ContentMetadata));
-
-        // Edge case: LENGTH=255 (reserved) but even if it weren't, insufficient bytes
-        let result = parse_content_metadata(&[255, 0xAA]);
-        assert_eq!(result, Err(Error::ContentReserved));
+        // Proprietary LENGTH=5 with only 3 bytes of data
+        let result = parse_content(&[2, 5, 0xAA, 0xBB, 0xCC]);
+        assert_eq!(result, Err(Error::Corrupted));
     }
 
     #[test]
     fn test_parse_content_metadata_exact_bytes() {
-        // LENGTH=3 with exactly 3 bytes - should succeed
-        let (offset, content) = parse_content_metadata(&[3, 0xAA, 0xBB, 0xCC]).unwrap();
-        assert_eq!(offset, 4); // 1 (LENGTH) + 3 (data)
+        // Proprietary TYPE=0x02 LENGTH=3 with exactly 3 bytes - should succeed
+        let (offset, content) = parse_content(&[2, 3, 0xAA, 0xBB, 0xCC]).unwrap();
+        assert_eq!(offset, 5); // 1 (TYPE) + 1 (LENGTH) + 3 (data)
         assert_eq!(content, Content::Proprietary(vec![0xAA, 0xBB, 0xCC]));
 
-        // LENGTH=2 with exactly 2 bytes - should succeed for BIP number
-        let (offset, content) = parse_content_metadata(&[2, 0x01, 0x7C]).unwrap();
+        // BIP TYPE=0x01 with exactly 2 bytes of BIP number - should succeed
+        let (offset, content) = parse_content(&[1, 0x01, 0x7C]).unwrap();
         assert_eq!(offset, 3);
         assert_eq!(content, Content::Bip380);
     }
 
     #[test]
-    fn test_parse_content_metadata_reserved_0xff() {
-        // LENGTH=0xFF is reserved and should be rejected
-        let mut bytes = vec![0xFF];
-        // Add 255 bytes of data (what 0xFF would indicate if it were valid)
-        bytes.extend(vec![0xAA; 255]);
+    fn test_parse_content_metadata_upgrade_0x80() {
+        // TYPE >= 0x80 signals an upgrade and parsers MUST stop
+        let result = parse_content(&[0xFF]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+        let result = parse_content(&[0xFF, 0xAA]);
+        assert_eq!(result, Err(Error::ContentMetadata));
+        let result = parse_content(&[0x80, 0x00]);
+        assert_eq!(result, Err(Error::ContentMetadata));
 
-        let result = parse_content_metadata(&bytes);
-        assert_eq!(result, Err(Error::ContentReserved));
-
-        // Even with insufficient bytes, should still reject 0xFF
-        let result = parse_content_metadata(&[0xFF, 0xAA]);
-        assert_eq!(result, Err(Error::ContentReserved));
-
-        // 0xFE (254) should still work as proprietary
-        let mut bytes = vec![0xFE];
-        bytes.extend(vec![0xBB; 254]);
-        let (offset, content) = parse_content_metadata(&bytes).unwrap();
-        assert_eq!(offset, 255); // 1 + 254
-        assert_eq!(content, Content::Proprietary(vec![0xBB; 254]));
+        // Unknown TYPE < 0x80 must be skipped: consume LENGTH bytes of DATA
+        let (offset, content) = parse_content(&[0x05, 0x02, 0xAA, 0xBB]).unwrap();
+        assert_eq!(offset, 4); // 1 (TYPE) + 1 (LENGTH) + 2 (data)
+        assert_eq!(content, Content::Unknown);
     }
 
     #[test]
     fn test_serialize_content() {
-        // Proprietary
+        // Proprietary: TYPE=0x02, LENGTH=3, data
         let mut c = Content::Proprietary(vec![0, 0, 0]);
-        let mut serialized: Vec<u8> = c.into();
-        assert_eq!(serialized, vec![3, 0, 0, 0]);
-        // BIP 380
+        let mut serialized: Vec<u8> = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x02, 0x03, 0, 0, 0]);
+        // BIP 380: TYPE=0x01, 2-byte BE BIP number (no LENGTH)
         c = Content::Bip380;
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x7C]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x7C]);
         c = Content::BIP(380);
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x7C]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x7C]);
         // BIP 388
         c = Content::Bip388;
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x84]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x84]);
         c = Content::BIP(388);
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x84]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x84]);
         // BIP 329
         c = Content::Bip329;
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x49]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x49]);
         c = Content::BIP(329);
-        serialized = c.into();
-        assert_eq!(serialized, vec![0x02, 0x01, 0x49]);
+        serialized = c.try_into().unwrap();
+        assert_eq!(serialized, vec![0x01, 0x01, 0x49]);
     }
 
     #[test]
@@ -1189,7 +1222,7 @@ mod tests {
     fn test_basic_encrypt_decrypt() {
         let keys = vec![pk2(), pk1()];
         let data = "test".as_bytes().to_vec();
-        let bytes = encrypt_aes_gcm_256_v1(vec![], Content::None, keys, &data).unwrap();
+        let bytes = encrypt_aes_gcm_256_v1(vec![], Content::Bip380, keys, &data).unwrap();
 
         let version = decode_version(&bytes).unwrap();
         assert_eq!(version, 1);
@@ -1203,11 +1236,11 @@ mod tests {
 
         let (content, decrypted_1) =
             decrypt_aes_gcm_256_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
-        assert_eq!(content, Content::None);
+        assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_1).unwrap(), "test".to_string());
         let (content, decrypted_2) =
             decrypt_aes_gcm_256_v1(pk2(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
-        assert_eq!(content, Content::None);
+        assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_2).unwrap(), "test".to_string());
         let decrypted_3 =
             decrypt_aes_gcm_256_v1(pk3(), &individual_secrets, cyphertext.clone(), nonce);
@@ -1590,7 +1623,7 @@ mod encrypted_backup {
 
             // Parse content metadata from hex
             let content_bytes = hex::decode(&v.content).expect(description);
-            let (_, content) = parse_content_metadata(&content_bytes)
+            let (_, content) = parse_content(&content_bytes)
                 .ok()
                 .unwrap_or_else(|| panic!("Failed to parse content for: {description}"));
 
@@ -1701,7 +1734,7 @@ mod content_vectors {
         let mut parsed = vec![];
         for v in vectors {
             let content = hex::decode(&v.content).expect(&v.description);
-            match parse_content_metadata(&content) {
+            match parse_content(&content) {
                 Ok((_, content)) => {
                     assert!(v.valid);
                     parsed.push((content, v.description.to_string()));

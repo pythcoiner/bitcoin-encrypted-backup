@@ -409,8 +409,8 @@ mod tests {
         assert_eq!(backp.get_content(), Content::Unknown);
         let fail = backp.clone().encrypt().unwrap_err();
         assert_eq!(fail, Error::UnknownContent);
-        backp = backp.set_content_type(Content::None);
-        assert_eq!(backp.get_content(), Content::None);
+        backp = backp.set_content_type(Content::Bip380);
+        assert_eq!(backp.get_content(), Content::Bip380);
 
         assert_eq!(backp.get_encryption(), Encryption::AesGcm256);
         backp = backp.set_encryption(Encryption::Undefined);
@@ -452,13 +452,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(fail, Error::WrongKey);
 
-        let restored = EncryptedBackup::new()
+        // Plaintext `[0x00, 0x00, 0x00]` is not a valid descriptor string, so
+        // extracting BIP380 content surfaces Error::Descriptor — proving the
+        // round-trip decrypt succeeded before extract failed.
+        let fail = EncryptedBackup::new()
             .set_encrypted_payload(&bytes)
             .unwrap()
             .set_keys(vec![pk1])
             .decrypt()
-            .unwrap();
-        assert_eq!(restored, Decrypted::Raw(vec![0x00u8, 0x00, 0x00]));
+            .unwrap_err();
+        assert_eq!(fail, Error::Descriptor);
     }
 
     pub fn dummy_encrypted_payload() -> Vec<u8> {
@@ -467,7 +470,7 @@ mod tests {
             .set_payload(&vec![0x00])
             .unwrap()
             .set_keys(vec![key])
-            .set_content_type(Content::None)
+            .set_content_type(Content::Bip380)
             .encrypt()
             .unwrap()
     }
@@ -476,7 +479,7 @@ mod tests {
     fn test_encrypt_wrong_payload() {
         // No payload
         let fail = EncryptedBackup::new()
-            .set_content_type(Content::None)
+            .set_content_type(Content::Bip380)
             .encrypt()
             .unwrap_err();
         assert_eq!(fail, Error::WrongPayload);
@@ -487,7 +490,7 @@ mod tests {
         let fail = EncryptedBackup::new()
             .set_encrypted_payload(&dummy_payload)
             .unwrap()
-            .set_content_type(Content::None)
+            .set_content_type(Content::Bip380)
             .encrypt()
             .unwrap_err();
         assert_eq!(fail, Error::WrongPayload);
