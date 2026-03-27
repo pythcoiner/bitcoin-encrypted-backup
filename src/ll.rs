@@ -177,6 +177,16 @@ impl Content {
     }
 }
 
+pub fn tagged_hash(tag: &[u8], bytes: &[u8]) -> sha256::Hash {
+    // BIP340-style: prefix with SHA256(tag) || SHA256(tag)
+    let tag_hash = sha256::Hash::hash(tag);
+    let mut engine = sha256::HashEngine::default();
+    engine.input(tag_hash.as_byte_array());
+    engine.input(tag_hash.as_byte_array());
+    engine.input(bytes);
+    sha256::Hash::from_engine(engine)
+}
+
 pub fn xor(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut out = [0; 32];
     for i in 0..32 {
@@ -195,17 +205,15 @@ pub fn nonce() -> [u8; 12] {
 }
 
 pub fn decryption_secret(keys: &[[u8; 33]]) -> sha256::Hash {
-    let mut engine = sha256::HashEngine::default();
-    engine.input(DECRYPTION_SECRET.as_bytes());
-    keys.iter().for_each(|k| engine.input(k));
-    sha256::Hash::from_engine(engine)
+    let bytes = keys.iter().fold(vec![], |mut a, b| {
+        a.append(&mut b.to_vec());
+        a
+    });
+    tagged_hash(DECRYPTION_SECRET.as_bytes(), &bytes)
 }
 
 pub fn individual_secret(secret: &sha256::Hash, key: &[u8; 33]) -> [u8; 32] {
-    let mut engine = sha256::HashEngine::default();
-    engine.input(INDIVIDUAL_SECRET.as_bytes());
-    engine.input(key);
-    let si = sha256::Hash::from_engine(engine);
+    let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), key);
     xor(secret.as_byte_array(), si.as_byte_array())
 }
 
@@ -524,10 +532,7 @@ pub fn decrypt_aes_gcm_256_v1(
 ) -> Result<(Content, Vec<u8>), Error> {
     let raw_key = key.serialize();
 
-    let mut engine = sha256::HashEngine::default();
-    engine.input(INDIVIDUAL_SECRET.as_bytes());
-    engine.input(&raw_key);
-    let si = sha256::Hash::from_engine(engine);
+    let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), &raw_key);
 
     for ci in individual_secrets {
         let secret = xor(si.as_byte_array(), ci);
@@ -1508,11 +1513,7 @@ mod encryption_secret {
             for (i, raw_key) in raw_keys.iter().enumerate() {
                 let individual_sec = computed_individual_secrets[i];
 
-                // Compute Si = SHA256("BEB_BACKUP_INDIVIDUAL_SECRET" || key)
-                let mut engine = sha256::HashEngine::default();
-                engine.input(INDIVIDUAL_SECRET.as_bytes());
-                engine.input(raw_key);
-                let si = sha256::Hash::from_engine(engine);
+                let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), raw_key);
 
                 // Recover secret: S = Ci XOR Si
                 let recovered_secret = xor(&individual_sec, si.as_byte_array());
