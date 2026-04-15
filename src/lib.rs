@@ -204,7 +204,41 @@ impl EncryptedBackup {
             _ => Err(Error::NotImplemented),
         }
     }
-    pub fn set_encrypted_payload(mut self, bytes: &[u8]) -> Result<Self, Error> {
+    #[cfg(feature = "base64")]
+    pub fn encrypt_base64(
+        self,
+        #[cfg(not(feature = "rand"))] nonce: [u8; 12],
+    ) -> Result<String, Error> {
+        use base64::Engine as _;
+        let bytes = self.encrypt(
+            #[cfg(not(feature = "rand"))]
+            nonce,
+        )?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+    pub fn set_encrypted_payload(self, bytes: &[u8]) -> Result<Self, Error> {
+        // Auto-detect: the binary BIPXXX blob always starts with the
+        // 6-byte ASCII magic "BIPXXX". If the input does not start with
+        // that prefix, try decoding it as standard RFC 4648 base64 (the
+        // format produced by bitcoin-core's wallet tool). Base64 of any
+        // BIPXXX blob starts with "Qkl..." so the check is unambiguous.
+        if bytes.starts_with(ll::MAGIC.as_bytes()) {
+            return self.set_encrypted_payload_binary(bytes);
+        }
+        #[cfg(feature = "base64")]
+        {
+            use base64::Engine as _;
+            let text = core::str::from_utf8(bytes).map_err(|_| Error::Base64)?;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(text.trim())
+                .map_err(|_| Error::Base64)?;
+            self.set_encrypted_payload_binary(&decoded)
+        }
+        #[cfg(not(feature = "base64"))]
+        self.set_encrypted_payload_binary(bytes)
+    }
+
+    fn set_encrypted_payload_binary(mut self, bytes: &[u8]) -> Result<Self, Error> {
         let version: Version = ll::decode_version(bytes).map(|v| v.into())?;
         match version {
             Version::V1 => {
@@ -356,6 +390,7 @@ pub enum Error {
     NoKey,
     WrongKey,
     DescriptorHasNoKeys,
+    Base64,
     String(Box<String>),
 }
 
@@ -578,6 +613,86 @@ mod tests {
             .decrypt()
             .unwrap_err();
         assert_eq!(fail, Error::WrongKey);
+    }
+
+    #[cfg(feature = "base64")]
+    #[test]
+    fn test_base64_roundtrip() {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let mut sk = [0u8; 32];
+        sk[31] = 7;
+        let pk = bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &bitcoin::secp256k1::SecretKey::from_slice(&sk).unwrap(),
+        );
+
+        let b64 = EncryptedBackup::new()
+            .set_payload(&vec![0x00u8, 0x01, 0x02])
+            .unwrap()
+            .set_keys(vec![pk])
+            .set_content_type(Content::Bip380)
+            .encrypt_base64()
+            .unwrap();
+
+        // Decrypt via auto-detected base64 input (bytes of UTF-8 string).
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(b64.as_bytes())
+            .unwrap()
+            .set_keys(vec![pk])
+            .decrypt()
+            .unwrap_err();
+        // Plaintext isn't a valid descriptor — extract failing proves
+        // the chacha decrypt step succeeded first.
+        assert_eq!(err, Error::Descriptor);
+
+        // Tolerate trailing newline (stdin-style input).
+        let mut with_newline = b64.clone();
+        with_newline.push('\n');
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(with_newline.as_bytes())
+            .unwrap()
+            .set_keys(vec![pk])
+            .decrypt()
+            .unwrap_err();
+        assert_eq!(err, Error::Descriptor);
+    }
+
+    #[cfg(feature = "base64")]
+    #[test]
+    fn test_binary_still_works_with_base64_feature() {
+        // Confirm the auto-detect logic does not regress the binary path.
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let mut sk = [0u8; 32];
+        sk[31] = 8;
+        let pk = bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &bitcoin::secp256k1::SecretKey::from_slice(&sk).unwrap(),
+        );
+        let bytes = EncryptedBackup::new()
+            .set_payload(&vec![0x00u8])
+            .unwrap()
+            .set_keys(vec![pk])
+            .set_content_type(Content::Bip380)
+            .encrypt()
+            .unwrap();
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(&bytes)
+            .unwrap()
+            .set_keys(vec![pk])
+            .decrypt()
+            .unwrap_err();
+        assert_eq!(err, Error::Descriptor);
+    }
+
+    #[cfg(feature = "base64")]
+    #[test]
+    fn test_malformed_input_error() {
+        // Input starts neither with the magic nor decodes as valid base64.
+        let garbage = b"!!!!not-valid-base64-or-magic!!!!";
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(garbage)
+            .unwrap_err();
+        assert_eq!(err, Error::Base64);
     }
 
     #[test]

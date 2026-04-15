@@ -25,7 +25,7 @@ use crate::{descriptor::bip341_nums, Encryption, Version};
 
 const DECRYPTION_SECRET: &str = "BIPXXX_DECRYPTION_SECRET";
 const INDIVIDUAL_SECRET: &str = "BIPXXX_INDIVIDUAL_SECRET";
-const MAGIC: &str = "BIPXXX";
+pub const MAGIC: &str = "BIPXXX";
 
 /// Size in bytes of a 32-byte x-only Schnorr/BIP340 public key.
 pub const XONLY_KEY_SIZE: usize = SCHNORR_PUBLIC_KEY_SIZE;
@@ -1698,6 +1698,13 @@ mod encrypted_backup {
         /// the self-delimited backup.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trailing: Option<String>,
+        /// Optional standard RFC 4648 base64 of `expected`. Matches the
+        /// format produced by bitcoin-core's wallet tool via
+        /// `EncodeEncryptedBackupBase64`. Enables cross-implementation
+        /// interop checks.
+        #[cfg(feature = "base64")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_base64: Option<String>,
     }
 
     #[test]
@@ -1726,7 +1733,13 @@ mod encrypted_backup {
                 nonce,
             )
             .unwrap();
-            v.expected = hex::encode(encrypted);
+            v.expected = hex::encode(&encrypted);
+            #[cfg(feature = "base64")]
+            {
+                use base64::Engine as _;
+                v.expected_base64 =
+                    Some(base64::engine::general_purpose::STANDARD.encode(&encrypted));
+            }
         }
         let out = serde_json::to_string_pretty(&vectors).unwrap();
         std::fs::write("test_vectors/encrypted_backup.json", out).unwrap();
@@ -1778,6 +1791,26 @@ mod encrypted_backup {
                 encrypted, expected_bytes,
                 "Encrypted payload mismatch: {description}"
             );
+
+            #[cfg(feature = "base64")]
+            {
+                use base64::Engine as _;
+                if let Some(expected_b64) = v.expected_base64.as_deref() {
+                    let computed_b64 =
+                        base64::engine::general_purpose::STANDARD.encode(&encrypted);
+                    assert_eq!(
+                        computed_b64, expected_b64,
+                        "Base64 encoding mismatch: {description}"
+                    );
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(expected_b64)
+                        .expect(description);
+                    assert_eq!(
+                        decoded, expected_bytes,
+                        "Base64 round-trip mismatch: {description}"
+                    );
+                }
+            }
 
             // Test decryption
             let version = decode_version(&encrypted).expect(description);
