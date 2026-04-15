@@ -1693,6 +1693,11 @@ mod encrypted_backup {
         plaintext: String,
         nonce: String,
         expected: String,
+        /// Optional hex of arbitrary bytes appended to `expected` before
+        /// parsing. Parsers MUST ignore trailing bytes past the end of
+        /// the self-delimited backup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trailing: Option<String>,
     }
 
     #[test]
@@ -1816,6 +1821,66 @@ mod encrypted_backup {
                 assert_eq!(
                     decrypted_plaintext, plaintext,
                     "Decrypted plaintext mismatch: {description}"
+                );
+            }
+
+            // Trailing-bytes tolerance: when the vector provides a
+            // `trailing` suffix, appending it to the valid backup MUST
+            // NOT affect parsing or decryption. The framing is
+            // self-delimited (VarInt <LENGTH> before the cyphertext),
+            // so extra suffix bytes are ignored.
+            let Some(trailing_hex) = v.trailing.as_deref() else {
+                continue;
+            };
+            let trailing = hex::decode(trailing_hex).expect(description);
+            let mut with_trailer = encrypted.clone();
+            with_trailer.extend_from_slice(&trailing);
+
+            let version_t = decode_version(&with_trailer).expect(description);
+            assert_eq!(
+                version_t, v.version,
+                "Version mismatch with trailing bytes: {description}"
+            );
+
+            let mut parsed_paths_t =
+                decode_derivation_paths(&with_trailer).expect(description);
+            parsed_paths_t.sort();
+            assert_eq!(
+                parsed_paths_t, derivation_paths,
+                "Derivation paths mismatch with trailing bytes: {description}"
+            );
+
+            let (_, is_t, enc_t, nonce_t, cyphertext_t) =
+                decode_v1(&with_trailer).expect(description);
+            assert_eq!(
+                enc_t, v.encryption,
+                "Encryption type mismatch with trailing bytes: {description}"
+            );
+            assert_eq!(
+                nonce_t, nonce,
+                "Nonce mismatch with trailing bytes: {description}"
+            );
+            assert_eq!(
+                cyphertext_t, cyphertext,
+                "Cyphertext mismatch with trailing bytes: {description}"
+            );
+
+            for key in &keys {
+                let (decrypted_content, decrypted_plaintext) = decrypt_chacha20_poly1305_v1(
+                    *key,
+                    &is_t,
+                    cyphertext_t.clone(),
+                    nonce_t,
+                )
+                .expect(description);
+                let decrypted_plaintext = String::from_utf8(decrypted_plaintext).unwrap();
+                assert_eq!(
+                    decrypted_content, content,
+                    "Content metadata mismatch with trailing bytes: {description}"
+                );
+                assert_eq!(
+                    decrypted_plaintext, plaintext,
+                    "Decrypted plaintext mismatch with trailing bytes: {description}"
                 );
             }
         }

@@ -10,7 +10,8 @@
     "derivation_paths": [],
     "plaintext": "00",
     "nonce": "a1b2c3d4e5f607080910a1b2",
-    "expected": "424950585858010001ff34b3411f78127b71ca2e3cc60d0fd71350ee557c37d71f4d81fb913461ae0001a1b2c3d4e5f607080910a1b2151d8f44dba6f420976b9343f792b4bd58c06289d234"
+    "expected": "424950585858010001ff34b3411f78127b71ca2e3cc60d0fd71350ee557c37d71f4d81fb913461ae0001a1b2c3d4e5f607080910a1b2151d8f44dba6f420976b9343f792b4bd58c06289d234",
+    "trailing": "deadbeef00ff"
   },
   {
     "description": "Two keys, 1 derivation paths, BIP380 content",
