@@ -51,10 +51,11 @@ pub fn bip341_nums() -> bitcoin::secp256k1::PublicKey {
 pub fn descr_to_dpks(
     descriptor: &Descriptor<DescriptorPublicKey>,
 ) -> Result<Vec<DescriptorPublicKey>, Error> {
+    let nums_xonly = bip341_nums().x_only_public_key().0;
     let mut keys = BTreeSet::new();
     descriptor.for_each_key(|k| {
         let pk = dpk_to_pk(k);
-        if pk != bip341_nums() {
+        if pk.x_only_public_key().0 != nums_xonly {
             keys.insert(k.clone());
         }
         true
@@ -267,14 +268,15 @@ pub mod tests {
         let descriptor = Descriptor::<DescriptorPublicKey>::from_str(descr_str).unwrap();
         // unspendable keys must have been dropped
         let keys = descr_to_dpks(&descriptor).unwrap();
+        let nums_xonly = bip341_nums().x_only_public_key().0;
         for key in keys {
             let pk = dpk_to_pk(&key);
-            assert_ne!(pk, bip341_nums());
+            assert_ne!(pk.x_only_public_key().0, nums_xonly);
         }
         // but the descriptor contains unspendable
         let contains_unspendable = descriptor.for_any_key(|k| {
             let pk = dpk_to_pk(k);
-            pk == bip341_nums()
+            pk.x_only_public_key().0 == nums_xonly
         });
         assert!(contains_unspendable);
     }

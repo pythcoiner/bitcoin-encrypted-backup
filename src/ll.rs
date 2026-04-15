@@ -15,7 +15,8 @@ use miniscript::bitcoin::{
     self,
     bip32::{ChildNumber, DerivationPath},
     hashes::{sha256, Hash, HashEngine},
-    secp256k1, VarInt,
+    secp256k1::{self, constants::SCHNORR_PUBLIC_KEY_SIZE},
+    VarInt,
 };
 #[cfg(feature = "rand")]
 use rand::{rngs::OsRng, TryRngCore};
@@ -25,6 +26,9 @@ use crate::{descriptor::bip341_nums, Encryption, Version};
 const DECRYPTION_SECRET: &str = "BIPXXX_DECRYPTION_SECRET";
 const INDIVIDUAL_SECRET: &str = "BIPXXX_INDIVIDUAL_SECRET";
 const MAGIC: &str = "BIPXXX";
+
+/// Size in bytes of a 32-byte x-only Schnorr/BIP340 public key.
+pub const XONLY_KEY_SIZE: usize = SCHNORR_PUBLIC_KEY_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -206,7 +210,7 @@ pub fn nonce() -> [u8; 12] {
     nonce
 }
 
-pub fn decryption_secret(keys: &[[u8; 33]]) -> sha256::Hash {
+pub fn decryption_secret(keys: &[[u8; XONLY_KEY_SIZE]]) -> sha256::Hash {
     let bytes = keys.iter().fold(vec![], |mut a, b| {
         a.append(&mut b.to_vec());
         a
@@ -214,12 +218,12 @@ pub fn decryption_secret(keys: &[[u8; 33]]) -> sha256::Hash {
     tagged_hash(DECRYPTION_SECRET.as_bytes(), &bytes)
 }
 
-pub fn individual_secret(secret: &sha256::Hash, key: &[u8; 33]) -> [u8; 32] {
+pub fn individual_secret(secret: &sha256::Hash, key: &[u8; XONLY_KEY_SIZE]) -> [u8; 32] {
     let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), key);
     xor(secret.as_byte_array(), si.as_byte_array())
 }
 
-pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; 33]]) -> Vec<[u8; 32]> {
+pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; XONLY_KEY_SIZE]]) -> Vec<[u8; 32]> {
     keys.iter()
         .map(|k| individual_secret(secret, k))
         .collect::<Vec<_>>()
@@ -443,9 +447,10 @@ fn encrypt_chacha20_poly1305_v1_with_nonce(
     nonce: [u8; 12],
 ) -> Result<Vec<u8>, Error> {
     // drop duplicates keys and sort out bip341 nums
+    let nums_xonly = bip341_nums().x_only_public_key().0;
     let keys = keys
         .into_iter()
-        .filter(|k| *k != bip341_nums())
+        .filter(|k| k.x_only_public_key().0 != nums_xonly)
         .collect::<BTreeSet<_>>();
 
     // drop duplicates derivation paths
@@ -479,7 +484,10 @@ fn encrypt_chacha20_poly1305_v1_with_nonce(
         return Err(Error::ContentMetadata);
     }
 
-    let mut raw_keys = keys.into_iter().map(|k| k.serialize()).collect::<Vec<_>>();
+    let mut raw_keys = keys
+        .into_iter()
+        .map(|k| k.x_only_public_key().0.serialize())
+        .collect::<Vec<[u8; XONLY_KEY_SIZE]>>();
     raw_keys.sort();
 
     let secret = decryption_secret(&raw_keys);
@@ -532,7 +540,7 @@ pub fn decrypt_chacha20_poly1305_v1(
     cyphertext: Vec<u8>,
     nonce: [u8; 12],
 ) -> Result<(Content, Vec<u8>), Error> {
-    let raw_key = key.serialize();
+    let raw_key = key.x_only_public_key().0.serialize();
 
     let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), &raw_key);
 
@@ -1469,7 +1477,10 @@ mod encryption_secret {
                 .collect();
 
             // Convert to raw bytes and sort
-            let mut raw_keys: Vec<[u8; 33]> = keys.iter().map(|k| k.serialize()).collect();
+            let mut raw_keys: Vec<[u8; XONLY_KEY_SIZE]> = keys
+                .iter()
+                .map(|k| k.x_only_public_key().0.serialize())
+                .collect();
             raw_keys.sort();
             raw_keys.dedup();
 
