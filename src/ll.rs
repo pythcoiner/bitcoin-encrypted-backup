@@ -51,6 +51,7 @@ pub enum Error {
     Increment,
     ContentMetadataEmpty,
     ContentReserved,
+    EncryptionReserved,
     ZeroedNonce,
 }
 
@@ -576,6 +577,9 @@ pub fn parse_encryption(bytes: &[u8]) -> Result<(usize, u8), Error> {
         return Err(Error::Encryption);
     }
     let encryption = bytes[0];
+    if encryption == 0x00 {
+        return Err(Error::EncryptionReserved);
+    }
     Ok((1, encryption))
 }
 
@@ -792,15 +796,18 @@ mod tests {
 
     #[test]
     pub fn test_parse_encryption() {
-        let (l, e) = parse_encryption(&[0]).unwrap();
-        assert_eq!(l, 1);
-        assert_eq!(e, 0);
-        let (l, e) = parse_encryption(&[0, 2]).unwrap();
-        assert_eq!(l, 1);
-        assert_eq!(e, 0);
+        // 0x00 is reserved
+        let failed = parse_encryption(&[0]).unwrap_err();
+        assert_eq!(failed, Error::EncryptionReserved);
+        let failed = parse_encryption(&[0, 2]).unwrap_err();
+        assert_eq!(failed, Error::EncryptionReserved);
+        // non-zero bytes are accepted (unknown algos are handled upstream)
         let (l, e) = parse_encryption(&[2, 0]).unwrap();
         assert_eq!(l, 1);
         assert_eq!(e, 2);
+        let (l, e) = parse_encryption(&[1]).unwrap();
+        assert_eq!(l, 1);
+        assert_eq!(e, 1);
         let failed = parse_encryption(&[]).unwrap_err();
         assert_eq!(failed, Error::Encryption)
     }
