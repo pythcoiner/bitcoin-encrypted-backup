@@ -117,7 +117,7 @@ impl Default for EncryptedBackup {
         Self {
             version: Version::V1,
             content: Content::Unknown,
-            encryption: Encryption::AesGcm256,
+            encryption: Encryption::ChaCha20Poly1305,
             derivation_paths: vec![],
             keys: vec![],
             payload: Payload::None,
@@ -193,7 +193,7 @@ impl EncryptedBackup {
         };
 
         match (self.encryption, self.version) {
-            (Encryption::AesGcm256, Version::V1) => Ok(ll::encrypt_aes_gcm_256_v1(
+            (Encryption::ChaCha20Poly1305, Version::V1) => Ok(ll::encrypt_chacha20_poly1305_v1(
                 self.derivation_paths,
                 self.content.clone(),
                 self.keys,
@@ -249,7 +249,7 @@ impl EncryptedBackup {
                     nonce,
                 } => {
                     for key in &self.keys {
-                        if let Ok((content, bytes)) = ll::decrypt_aes_gcm_256_v1(
+                        if let Ok((content, bytes)) = ll::decrypt_chacha20_poly1305_v1(
                             *key,
                             &individual_secrets.clone(),
                             cyphertext.clone(),
@@ -270,7 +270,7 @@ impl EncryptedBackup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encryption {
     Undefined,
-    AesGcm256,
+    ChaCha20Poly1305,
     Unknown,
 }
 
@@ -278,7 +278,7 @@ impl From<u8> for Encryption {
     fn from(value: u8) -> Self {
         match value {
             0 => Self::Undefined,
-            1 => Self::AesGcm256,
+            1 => Self::ChaCha20Poly1305,
             _ => Self::Unknown,
         }
     }
@@ -288,7 +288,7 @@ impl From<Encryption> for u8 {
     fn from(value: Encryption) -> Self {
         match value {
             Encryption::Undefined => 0x00,
-            Encryption::AesGcm256 => 0x01,
+            Encryption::ChaCha20Poly1305 => 0x01,
             Encryption::Unknown => 0xFF,
         }
     }
@@ -298,7 +298,7 @@ impl Encryption {
     pub fn is_defined(&self) -> bool {
         match self {
             Encryption::Undefined | Encryption::Unknown => false,
-            Encryption::AesGcm256 => true,
+            Encryption::ChaCha20Poly1305 => true,
         }
     }
 }
@@ -412,13 +412,13 @@ mod tests {
         backp = backp.set_content_type(Content::Bip380);
         assert_eq!(backp.get_content(), Content::Bip380);
 
-        assert_eq!(backp.get_encryption(), Encryption::AesGcm256);
+        assert_eq!(backp.get_encryption(), Encryption::ChaCha20Poly1305);
         backp = backp.set_encryption(Encryption::Undefined);
         assert_eq!(backp.get_encryption(), Encryption::Undefined);
         let fail = backp.clone().encrypt().unwrap_err();
         assert_eq!(fail, Error::EncryptionUndefined);
-        backp = backp.set_encryption(Encryption::AesGcm256);
-        assert_eq!(backp.get_encryption(), Encryption::AesGcm256);
+        backp = backp.set_encryption(Encryption::ChaCha20Poly1305);
+        assert_eq!(backp.get_encryption(), Encryption::ChaCha20Poly1305);
 
         backp = backp.set_version(Version::Unknown);
         let fail = backp.clone().encrypt().unwrap_err();
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_encryption_to_u8() {
-        let mut u: u8 = Encryption::AesGcm256.into();
+        let mut u: u8 = Encryption::ChaCha20Poly1305.into();
         assert_eq!(0x01, u);
         u = Encryption::Undefined.into();
         assert_eq!(0x00, u);
@@ -543,7 +543,7 @@ mod tests {
         let mut e: Encryption = 0x00u8.into();
         assert_eq!(e, Encryption::Undefined);
         e = 0x01u8.into();
-        assert_eq!(e, Encryption::AesGcm256);
+        assert_eq!(e, Encryption::ChaCha20Poly1305);
 
         for i in 0x02..0xFFu8 {
             e = i.into();

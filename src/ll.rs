@@ -7,9 +7,9 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::{vec, vec::Vec};
 
-use aes_gcm::{
+use chacha20poly1305::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Key, Nonce,
+    ChaCha20Poly1305, Key, Nonce,
 };
 use miniscript::bitcoin::{
     self,
@@ -51,6 +51,7 @@ pub enum Error {
     Increment,
     ContentMetadataEmpty,
     ContentReserved,
+    ZeroedNonce,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,18 +240,21 @@ pub fn encrypt_with_nonce(
     mut data: Vec<u8>,
     nonce: [u8; 12],
 ) -> Result<([u8; 12], Vec<u8>), Error> {
+    if nonce == [0u8; 12] {
+        return Err(Error::ZeroedNonce);
+    }
     if data.is_empty() {
         return Err(Error::EmptyBytes);
     }
     #[allow(deprecated)]
-    let key = Key::<Aes256Gcm>::from_slice(secret.as_byte_array());
-    let cipher = Aes256Gcm::new(key);
+    let key = Key::from_slice(secret.as_byte_array());
+    let cipher = ChaCha20Poly1305::new(key);
 
     let mut plaintext = vec![];
     plaintext.append(&mut data);
 
     cipher
-        .encrypt(&Nonce::from(nonce), plaintext.as_slice())
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_slice())
         .map(|c| (nonce, c))
         .map_err(|_| Error::Encrypt)
 }
@@ -430,7 +434,7 @@ pub fn decode_v1(
     ))
 }
 
-fn encrypt_aes_gcm_256_v1_with_nonce(
+fn encrypt_chacha20_poly1305_v1_with_nonce(
     derivation_paths: Vec<DerivationPath>,
     content_metadata: Content,
     keys: Vec<secp256k1::PublicKey>,
@@ -493,12 +497,12 @@ fn encrypt_aes_gcm_256_v1_with_nonce(
         Version::V1.into(),
         derivation_paths,
         individual_secrets,
-        Encryption::AesGcm256.into(),
+        Encryption::ChaCha20Poly1305.into(),
         encrypted_payload,
     ))
 }
 
-pub fn encrypt_aes_gcm_256_v1(
+pub fn encrypt_chacha20_poly1305_v1(
     derivation_paths: Vec<DerivationPath>,
     content_metadata: Content,
     keys: Vec<secp256k1::PublicKey>,
@@ -507,24 +511,21 @@ pub fn encrypt_aes_gcm_256_v1(
 ) -> Result<Vec<u8>, Error> {
     #[cfg(feature = "rand")]
     let nonce = nonce();
-    encrypt_aes_gcm_256_v1_with_nonce(derivation_paths, content_metadata, keys, data, nonce)
+    encrypt_chacha20_poly1305_v1_with_nonce(derivation_paths, content_metadata, keys, data, nonce)
 }
 
-pub fn try_decrypt_aes_gcm_256(
+pub fn try_decrypt_chacha20_poly1305(
     cyphertext: &[u8],
     secret: &[u8; 32],
     nonce: [u8; 12],
 ) -> Option<Vec<u8>> {
-    let nonce = Nonce::from(nonce);
+    let key = Key::from_slice(secret);
+    let cipher = ChaCha20Poly1305::new(key);
 
-    #[allow(deprecated)]
-    let key = Key::<Aes256Gcm>::from_slice(secret);
-    let cipher = Aes256Gcm::new(key);
-
-    cipher.decrypt(&nonce, cyphertext).ok()
+    cipher.decrypt(Nonce::from_slice(&nonce), cyphertext).ok()
 }
 
-pub fn decrypt_aes_gcm_256_v1(
+pub fn decrypt_chacha20_poly1305_v1(
     key: secp256k1::PublicKey,
     individual_secrets: &Vec<[u8; 32]>,
     cyphertext: Vec<u8>,
@@ -536,7 +537,7 @@ pub fn decrypt_aes_gcm_256_v1(
 
     for ci in individual_secrets {
         let secret = xor(si.as_byte_array(), ci);
-        if let Some(out) = try_decrypt_aes_gcm_256(&cyphertext, &secret, nonce) {
+        if let Some(out) = try_decrypt_chacha20_poly1305(&cyphertext, &secret, nonce) {
             let mut offset = init_offset(&out, 0)?;
             // <CONTENT_METADATA>
             let (incr, content) = parse_content(&out)?;
@@ -670,6 +671,9 @@ pub fn parse_encrypted_payload(
     // <NONCE>
     check_offset_lookahead(offset, bytes, 12)?;
     let nonce: [u8; 12] = bytes[offset..offset + 12].try_into().expect("checked");
+    if nonce == [0u8; 12] {
+        return Err(Error::ZeroedNonce);
+    }
     offset = increment_offset(bytes, offset, 12)?;
     // <LENGTH>
     let (VarInt(data_len), incr) = parse_varint(&bytes[offset..]).ok_or(Error::VarInt)?;
@@ -1184,7 +1188,7 @@ mod tests {
         // Empty keyvector must fail
         let keys = vec![];
         let data = "test".as_bytes().to_vec();
-        let res = encrypt_aes_gcm_256_v1(vec![], Content::Bip380, keys, &data);
+        let res = encrypt_chacha20_poly1305_v1(vec![], Content::Bip380, keys, &data);
         assert_eq!(res, Err(Error::KeyCount));
 
         // > 255 keys must fail
@@ -1200,12 +1204,12 @@ mod tests {
             }
         }
         let keys = keys.into_iter().collect::<Vec<_>>();
-        let res = encrypt_aes_gcm_256_v1(vec![], Content::Bip380, keys, &data);
+        let res = encrypt_chacha20_poly1305_v1(vec![], Content::Bip380, keys, &data);
         assert_eq!(res, Err(Error::KeyCount));
 
         // Empty payload must fail
         let keys = [pk1()].to_vec();
-        let res = encrypt_aes_gcm_256_v1(vec![], Content::Bip380, keys, &[]);
+        let res = encrypt_chacha20_poly1305_v1(vec![], Content::Bip380, keys, &[]);
         assert_eq!(res, Err(Error::DataLength));
 
         // > 255 deriv path must fail
@@ -1219,7 +1223,7 @@ mod tests {
             deriv_paths.insert(deriv);
         }
         let deriv_paths = deriv_paths.into_iter().collect();
-        let res = encrypt_aes_gcm_256_v1(deriv_paths, Content::Bip380, keys, &data);
+        let res = encrypt_chacha20_poly1305_v1(deriv_paths, Content::Bip380, keys, &data);
         assert_eq!(res, Err(Error::DerivPathCount));
     }
 
@@ -1227,7 +1231,7 @@ mod tests {
     fn test_basic_encrypt_decrypt() {
         let keys = vec![pk2(), pk1()];
         let data = "test".as_bytes().to_vec();
-        let bytes = encrypt_aes_gcm_256_v1(vec![], Content::Bip380, keys, &data).unwrap();
+        let bytes = encrypt_chacha20_poly1305_v1(vec![], Content::Bip380, keys, &data).unwrap();
 
         let version = decode_version(&bytes).unwrap();
         assert_eq!(version, 1);
@@ -1240,15 +1244,15 @@ mod tests {
         assert_eq!(encryption_type, 0x01);
 
         let (content, decrypted_1) =
-            decrypt_aes_gcm_256_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
+            decrypt_chacha20_poly1305_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
         assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_1).unwrap(), "test".to_string());
         let (content, decrypted_2) =
-            decrypt_aes_gcm_256_v1(pk2(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
+            decrypt_chacha20_poly1305_v1(pk2(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
         assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_2).unwrap(), "test".to_string());
         let decrypted_3 =
-            decrypt_aes_gcm_256_v1(pk3(), &individual_secrets, cyphertext.clone(), nonce);
+            decrypt_chacha20_poly1305_v1(pk3(), &individual_secrets, cyphertext.clone(), nonce);
         assert!(decrypted_3.is_err());
     }
 
@@ -1265,9 +1269,9 @@ mod tests {
         let payload = "payload".as_bytes().to_vec();
         let (nonce, ciphertext) = inner_encrypt(secret, payload).unwrap();
         // decrypting with secret success
-        let _ = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce).unwrap();
+        let _ = try_decrypt_chacha20_poly1305(&ciphertext, secret.as_byte_array(), nonce).unwrap();
         // decrypting with wrong secret fails
-        let fails = try_decrypt_aes_gcm_256(&ciphertext, wrong_secret.as_byte_array(), nonce);
+        let fails = try_decrypt_chacha20_poly1305(&ciphertext, wrong_secret.as_byte_array(), nonce);
         assert!(fails.is_none());
     }
 
@@ -1280,10 +1284,10 @@ mod tests {
         let payload = "payload".as_bytes().to_vec();
         let (nonce, ciphertext) = inner_encrypt(secret, payload).unwrap();
         // decrypting with correct nonce success
-        let _ = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce).unwrap();
+        let _ = try_decrypt_chacha20_poly1305(&ciphertext, secret.as_byte_array(), nonce).unwrap();
         // decrypting with wrong nonce fails
         let nonce = [0xF1; 12];
-        let fails = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce);
+        let fails = try_decrypt_chacha20_poly1305(&ciphertext, secret.as_byte_array(), nonce);
         assert!(fails.is_none());
     }
 
@@ -1296,7 +1300,7 @@ mod tests {
         let payload = "payload".as_bytes().to_vec();
         let (nonce, mut ciphertext) = inner_encrypt(secret, payload).unwrap();
         // decrypting with secret success
-        let _ = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce).unwrap();
+        let _ = try_decrypt_chacha20_poly1305(&ciphertext, secret.as_byte_array(), nonce).unwrap();
 
         // corrupting the ciphertext
         let offset = ciphertext.len() - 10;
@@ -1305,7 +1309,7 @@ mod tests {
         }
 
         // decryption must then fails
-        let fails = try_decrypt_aes_gcm_256(&ciphertext, secret.as_byte_array(), nonce);
+        let fails = try_decrypt_chacha20_poly1305(&ciphertext, secret.as_byte_array(), nonce);
         assert!(fails.is_none());
     }
 }
@@ -1578,7 +1582,7 @@ mod encryption_vectors {
                 );
 
                 // Test decryption
-                let decrypted = try_decrypt_aes_gcm_256(&computed_ciphertext, &secret, nonce)
+                let decrypted = try_decrypt_chacha20_poly1305(&computed_ciphertext, &secret, nonce)
                     .expect(description);
 
                 assert_eq!(decrypted, plaintext, "Decryption failed: {description}");
@@ -1591,6 +1595,15 @@ mod encryption_vectors {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_zeroed_nonce_rejected() {
+        let secret = sha256::Hash::from_byte_array([0xab; 32]);
+        let data = vec![0x01, 0x02, 0x03];
+        let zeroed_nonce = [0u8; 12];
+        let result = encrypt_with_nonce(secret, data, zeroed_nonce);
+        assert_eq!(result, Err(Error::ZeroedNonce));
     }
 }
 
@@ -1648,7 +1661,7 @@ mod encrypted_backup {
             let expected_bytes = hex::decode(&v.expected).expect(description);
 
             // Test encryption
-            let encrypted = encrypt_aes_gcm_256_v1_with_nonce(
+            let encrypted = encrypt_chacha20_poly1305_v1_with_nonce(
                 derivation_paths.clone(),
                 content.clone(),
                 keys.clone(),
@@ -1687,7 +1700,7 @@ mod encrypted_backup {
 
             // Test decryption with each key
             for key in &keys {
-                let (decrypted_content, decrypted_plaintext) = decrypt_aes_gcm_256_v1(
+                let (decrypted_content, decrypted_plaintext) = decrypt_chacha20_poly1305_v1(
                     *key,
                     &individual_secrets,
                     cyphertext.clone(),
