@@ -21,8 +21,23 @@ showcov:
     -format=html -output-dir=coverage \
     --object "target/debug/deps/$(ls target/debug/deps | grep encrypted_backup | head -n 1)"
 
-fuzz:
-    RUSTFLAGS="-C instrument-coverage" cargo fuzz run $F_TARGET
+fuzz-target target:
+    RUSTFLAGS="-C instrument-coverage" cargo fuzz run {{target}}
+
+# Run all fuzz targets in parallel for <time> seconds. Any failure
+# (crash / OOM / timeout) kills all siblings. Usage: `just fuzz 1800`.
+fuzz time:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd fuzz
+    targets=(decode encode parse_deriv_paths parse_encrypted_payload parse_individual_secrets)
+    pids=()
+    trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT INT TERM
+    for t in "${targets[@]}"; do
+        ( cargo +nightly fuzz run "$t" -- -max_total_time={{time}} || kill -TERM 0 ) &
+        pids+=($!)
+    done
+    wait
 
 fcov:
     RUSTFLAGS="-C instrument-coverage" cargo fuzz coverage $F_TARGET

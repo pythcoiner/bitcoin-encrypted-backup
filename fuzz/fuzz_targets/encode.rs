@@ -5,7 +5,7 @@ use bitcoin_encrypted_backup::{
     Content, Encryption, Version,
     ll::{
         decode_v1, encode_derivation_paths, encode_encrypted_payload, encode_individual_secrets,
-        encode_v1, increment_offset, nonce, parse_content_metadata, parse_derivation_paths,
+        encode_v1, increment_offset, nonce, parse_content, parse_derivation_paths,
         parse_individual_secrets,
     },
 };
@@ -23,7 +23,7 @@ fn content(bytes: &[u8]) -> (usize, Content) {
     if bytes.is_empty() {
         return (1, Content::Unknown);
     }
-    parse_content_metadata(bytes).unwrap_or((1, Content::Unknown))
+    parse_content(bytes).unwrap_or((1, Content::Unknown))
 }
 fn encryption(bytes: &[u8]) -> (usize, Encryption) {
     if bytes.is_empty() {
@@ -37,7 +37,7 @@ fuzz_target!(|bytes: &[u8]| {
         return;
     }
     let (mut offset, version) = version(bytes);
-    if !version.is_valid() {
+    if version != Version::V1 {
         return;
     }
     let (incr, deriv) = parse_derivation_paths(&bytes[offset..]).unwrap_or_default();
@@ -59,6 +59,9 @@ fuzz_target!(|bytes: &[u8]| {
         return;
     };
     let (incr, encryption) = encryption(&bytes[offset..]);
+    if !encryption.is_defined() {
+        return;
+    }
     let _offset = if let Ok(o) = increment_offset(bytes, offset, incr) {
         o
     } else {
