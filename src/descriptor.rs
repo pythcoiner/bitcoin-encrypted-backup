@@ -313,8 +313,21 @@ mod keys_types {
         for v in vectors {
             let dpk = DescriptorPublicKey::from_str(&v.key).expect(&v.description);
             let pk = dpk_to_pk(&dpk);
-            let res = hex::encode(pk.serialize());
+            let res = hex::encode(pk.x_only_public_key().0.serialize());
             assert_eq!(v.expected, res, "{}", v.description);
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn regenerate_vectors() {
+        let mut vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+        for v in vectors.iter_mut() {
+            let dpk = DescriptorPublicKey::from_str(&v.key).expect(&v.description);
+            let pk = dpk_to_pk(&dpk);
+            v.expected = hex::encode(pk.x_only_public_key().0.serialize());
+        }
+        let out = serde_json::to_string_pretty(&vectors).unwrap();
+        std::fs::write("test_vectors/keys_types.json", out).unwrap();
     }
 }

@@ -1,77 +1,67 @@
 [
   {
-    "description": "None",
-    "valid": true,
-    "content": "00"
-  },
-  {
     "description": "Bip 380",
     "valid": true,
-    "content": "02017c"
+    "content": "01017c"
   },
   {
     "description": "Bip 388",
     "valid": true,
-    "content": "020184"
+    "content": "010184"
   },
   {
     "description": "Bip 329",
     "valid": true,
-    "content": "020149"
+    "content": "010149"
   },
   {
     "description": "Bip 999",
     "valid": true,
-    "content": "0203e7"
+    "content": "0103e7"
   },
   {
     "description": "Bip max",
     "valid": true,
-    "content": "02ffff"
+    "content": "01ffff"
   },
   {
     "description": "Bip min",
     "valid": true,
-    "content": "020000"
+    "content": "010000"
   },
   {
     "description": "Propietary 00010203",
     "valid": true,
-    "content": "0400010203"
+    "content": "020400010203"
   },
   {
-    "description": "Invalid BIP",
+    "description": "TYPE 0x00 is reserved",
     "valid": false,
-    "content": "0200"
+    "content": "00"
   },
   {
-    "description": "Invalid proprietary",
+    "description": "Invalid BIP (insufficient bytes)",
     "valid": false,
-    "content": "0300"
+    "content": "0100"
   },
   {
-    "description": "Invalid proprietary",
+    "description": "Invalid proprietary (missing data)",
     "valid": false,
-    "content": "030000"
+    "content": "0201"
   },
   {
-    "description": "Starting with 0xFF is reserved",
+    "description": "Invalid proprietary (LENGTH exceeds payload)",
+    "valid": false,
+    "content": "020500"
+  },
+  {
+    "description": "TYPE >= 0x80 stops parsing",
     "valid": false,
     "content": "ff"
   },
   {
-    "description": "Starting with 0xFF is reserved",
+    "description": "TYPE >= 0x80 stops parsing",
     "valid": false,
     "content": "ff000000"
-  },
-  {
-    "description": "Starting with 0x01 is invalid",
-    "valid": false,
-    "content": "01"
-  },
-  {
-    "description": "Starting with 0x01 is invalid",
-    "valid": false,
-    "content": "0100"
   }
 ]

@@ -1454,12 +1454,40 @@ mod encryption_secret {
 
     const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/encryption_secret.json");
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct TestVector {
         description: String,
         keys: Vec<String>,
         decryption_secret: String,
         individual_secrets: Vec<String>,
+    }
+
+    #[test]
+    #[ignore]
+    fn regenerate_vectors() {
+        let mut vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+        for v in vectors.iter_mut() {
+            let keys: Vec<secp256k1::PublicKey> = v
+                .keys
+                .iter()
+                .map(|s| secp256k1::PublicKey::from_str(s).unwrap())
+                .collect();
+            let mut raw_keys: Vec<[u8; 32]> = keys
+                .iter()
+                .map(|k| k.x_only_public_key().0.serialize())
+                .collect();
+            raw_keys.sort();
+            raw_keys.dedup();
+
+            let s = decryption_secret(&raw_keys);
+            v.decryption_secret = hex::encode(s.as_byte_array());
+            v.individual_secrets = individual_secrets(&s, &raw_keys)
+                .iter()
+                .map(hex::encode)
+                .collect();
+        }
+        let out = serde_json::to_string_pretty(&vectors).unwrap();
+        std::fs::write("test_vectors/encryption_secret.json", out).unwrap();
     }
 
     #[test]
@@ -1554,9 +1582,9 @@ mod encryption_vectors {
     use super::*;
     use alloc::{string::String, vec::Vec};
 
-    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/aesgcm256_encryption.json");
+    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/chacha20poly1305_encryption.json");
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct TestVector {
         description: String,
         nonce: String,
@@ -1566,7 +1594,28 @@ mod encryption_vectors {
     }
 
     #[test]
-    fn test_vector_aesgcm256_encryption() {
+    #[ignore]
+    fn regenerate_vectors() {
+        let mut vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+        for v in vectors.iter_mut() {
+            let nonce: [u8; 12] = hex::decode(&v.nonce).unwrap().try_into().unwrap();
+            let secret: [u8; 32] = hex::decode(&v.secret).unwrap().try_into().unwrap();
+            let secret_hash = sha256::Hash::from_byte_array(secret);
+            let plaintext = if v.plaintext.is_empty() {
+                vec![]
+            } else {
+                hex::decode(&v.plaintext).unwrap()
+            };
+            v.ciphertext = encrypt_with_nonce(secret_hash, plaintext, nonce)
+                .ok()
+                .map(|(_, ct)| hex::encode(ct));
+        }
+        let out = serde_json::to_string_pretty(&vectors).unwrap();
+        std::fs::write("test_vectors/chacha20poly1305_encryption.json", out).unwrap();
+    }
+
+    #[test]
+    fn test_vector_chacha20poly1305_encryption() {
         let vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
 
         for v in vectors {
@@ -1633,7 +1682,7 @@ mod encrypted_backup {
 
     const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/encrypted_backup.json");
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct TestVector {
         description: String,
         version: u8,
@@ -1644,6 +1693,38 @@ mod encrypted_backup {
         plaintext: String,
         nonce: String,
         expected: String,
+    }
+
+    #[test]
+    #[ignore]
+    fn regenerate_vectors() {
+        let mut vectors: Vec<TestVector> = serde_json::from_str(TEST_VECTORS_JSON).unwrap();
+        for v in vectors.iter_mut() {
+            let content_bytes = hex::decode(&v.content).unwrap();
+            let (_, content) = parse_content(&content_bytes).unwrap();
+            let keys: Vec<secp256k1::PublicKey> = v
+                .keys
+                .iter()
+                .map(|s| secp256k1::PublicKey::from_str(s).unwrap())
+                .collect();
+            let derivation_paths: Vec<DerivationPath> = v
+                .derivation_paths
+                .iter()
+                .map(|s| DerivationPath::from_str(s).unwrap())
+                .collect();
+            let nonce: [u8; 12] = hex::decode(&v.nonce).unwrap().try_into().unwrap();
+            let encrypted = encrypt_chacha20_poly1305_v1_with_nonce(
+                derivation_paths,
+                content,
+                keys,
+                v.plaintext.as_bytes(),
+                nonce,
+            )
+            .unwrap();
+            v.expected = hex::encode(encrypted);
+        }
+        let out = serde_json::to_string_pretty(&vectors).unwrap();
+        std::fs::write("test_vectors/encrypted_backup.json", out).unwrap();
     }
 
     #[test]
@@ -1776,7 +1857,6 @@ mod content_vectors {
         }
 
         let expected = vec![
-            (Content::None, "None".to_string()),
             (Content::Bip380, "Bip 380".to_string()),
             (Content::Bip388, "Bip 388".to_string()),
             (Content::Bip329, "Bip 329".to_string()),

@@ -114,3 +114,31 @@ cargo build --target wasm32-unknown-unknown --no-default-features --features "mi
 Note: the `devices` feature uses
 [`async-hwi`](https://github.com/wizardsardine/async-hwi) crate, see
 [there](https://github.com/wizardsardine/async-hwi) for supported signing devices.
+
+## Regenerating test vectors
+
+The crate ships JSON test vectors under `test_vectors/` that are checked
+against the current implementation by the standard test suite. Whenever
+the spec or the crypto changes (cipher, tag strings, key width, TYPE
+encoding, …), the `expected` fields in those JSON files must be
+recomputed.
+
+Four `#[ignore]` helpers are provided for that purpose; each rewrites a
+single vector file in place from the current code:
+
+| Test                                            | File rewritten                              |
+|-------------------------------------------------|---------------------------------------------|
+| `descriptor::tests::regenerate_vectors`         | `test_vectors/keys_types.json`              |
+| `ll::encryption_secret::regenerate_vectors`     | `test_vectors/encryption_secret.json`       |
+| `ll::encryption_vectors::regenerate_vectors`    | `test_vectors/chacha20poly1305_encryption.json` |
+| `ll::encrypted_backup::regenerate_vectors`      | `test_vectors/encrypted_backup.json`        |
+
+Run them all at once:
+
+```
+cargo test regenerate_vectors -- --ignored
+```
+
+They are gated with `#[ignore]` so `cargo test` never touches the
+committed vectors. After running, inspect `git diff test_vectors/` and
+only commit the change when it reflects an intentional spec update.
