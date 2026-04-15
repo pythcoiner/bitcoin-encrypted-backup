@@ -529,6 +529,58 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_key_decrypt_with_each_key() {
+        // Three distinct keys. Encrypt once, then confirm each of the three
+        // keys can independently decrypt the payload via the high-level
+        // `EncryptedBackup` API. Also confirm an unrelated key fails.
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let pk_from = |tag: u8| {
+            let mut sk = [0u8; 32];
+            sk[31] = tag;
+            bitcoin::secp256k1::PublicKey::from_secret_key(
+                &secp,
+                &bitcoin::secp256k1::SecretKey::from_slice(&sk).unwrap(),
+            )
+        };
+        let pk1 = pk_from(1);
+        let pk2 = pk_from(2);
+        let pk3 = pk_from(3);
+        let unrelated = pk_from(99);
+
+        let payload = b"secret-backup-plaintext".to_vec();
+        let bytes = EncryptedBackup::new()
+            .set_payload(&payload)
+            .unwrap()
+            .set_keys(vec![pk1, pk2, pk3])
+            .set_content_type(Content::Bip380)
+            .encrypt()
+            .unwrap();
+
+        for key in [pk1, pk2, pk3] {
+            // Plaintext isn't a real descriptor, so Bip380 extract fails
+            // with Error::Descriptor — that failure proves the chacha
+            // decrypt step succeeded first (same signal used by
+            // test_encrypt_bytes). The WrongKey case below is the
+            // negative control.
+            let err = EncryptedBackup::new()
+                .set_encrypted_payload(&bytes)
+                .unwrap()
+                .set_keys(vec![key])
+                .decrypt()
+                .unwrap_err();
+            assert_eq!(err, Error::Descriptor, "key {:?} failed decrypt", key);
+        }
+
+        let fail = EncryptedBackup::new()
+            .set_encrypted_payload(&bytes)
+            .unwrap()
+            .set_keys(vec![unrelated])
+            .decrypt()
+            .unwrap_err();
+        assert_eq!(fail, Error::WrongKey);
+    }
+
+    #[test]
     fn test_encryption_to_u8() {
         let mut u: u8 = Encryption::ChaCha20Poly1305.into();
         assert_eq!(0x01, u);
