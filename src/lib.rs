@@ -115,7 +115,7 @@ pub struct EncryptedBackup {
 impl Default for EncryptedBackup {
     fn default() -> Self {
         Self {
-            version: Version::V0,
+            version: Version::V1,
             content: Content::Unknown,
             encryption: Encryption::AesGcm256,
             derivation_paths: vec![],
@@ -193,7 +193,7 @@ impl EncryptedBackup {
         };
 
         match (self.encryption, self.version) {
-            (Encryption::AesGcm256, Version::V0 | Version::V1) => Ok(ll::encrypt_aes_gcm_256_v1(
+            (Encryption::AesGcm256, Version::V1) => Ok(ll::encrypt_aes_gcm_256_v1(
                 self.derivation_paths,
                 self.content.clone(),
                 self.keys,
@@ -207,7 +207,7 @@ impl EncryptedBackup {
     pub fn set_encrypted_payload(mut self, bytes: &[u8]) -> Result<Self, Error> {
         let version: Version = ll::decode_version(bytes).map(|v| v.into())?;
         match version {
-            Version::V0 | Version::V1 => {
+            Version::V1 => {
                 let (derivation_paths, individual_secrets, encryption_type, nonce, cyphertext) =
                     ll::decode_v1(bytes)?;
                 self.derivation_paths = derivation_paths;
@@ -241,7 +241,7 @@ impl EncryptedBackup {
             return Err(Error::NoKey);
         }
         match self.version {
-            Version::V0 | Version::V1 => match &self.payload {
+            Version::V1 => match &self.payload {
                 Payload::None | Payload::Encrypt { .. } => Err(Error::WrongPayload),
                 Payload::DecryptV1 {
                     cyphertext,
@@ -261,6 +261,7 @@ impl EncryptedBackup {
                     Err(Error::WrongKey)
                 }
             },
+            Version::V0 => Err(Error::NotImplemented),
             Version::Unknown => Err(Error::UnknownVersion),
         }
     }

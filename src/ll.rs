@@ -518,7 +518,7 @@ pub fn parse_version(bytes: &[u8]) -> Result<(usize, u8), Error> {
         return Err(Error::Version);
     }
     let version = bytes[0];
-    if version > Version::max().into() {
+    if version == u8::from(Version::V0) || version > Version::max().into() {
         return Err(Error::Version);
     }
     Ok((1, version))
@@ -726,8 +726,9 @@ mod tests {
 
     #[test]
     fn test_parse_version() {
-        let (_, v) = parse_version(&[0x00]).unwrap();
-        assert_eq!(v, 0x00);
+        // V0 (0x00) is not a valid on-the-wire version
+        let res = parse_version(&[0x00]);
+        assert_eq!(res, Err(Error::Version));
         let (_, v) = parse_version(&[0x01]).unwrap();
         assert_eq!(v, 0x01);
         let res = parse_version(&[]);
