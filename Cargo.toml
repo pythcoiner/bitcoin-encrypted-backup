@@ -21,7 +21,7 @@ mscript_12_0 = { version = "12.0", default-features = false, features = ["serde"
 async-hwi = {version = "0.0.29", optional = true}
 
 # cli
-clap = { version = "4.5.42", features = ["derive"] , optional = true}
+clap = { version = "=4.5.42", features = ["derive"] , optional = true}
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "io-util", "sync"], optional = true}
 
 [dev-dependencies]
