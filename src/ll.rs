@@ -1259,11 +1259,13 @@ mod tests {
         assert_eq!(encryption_type, 0x01);
 
         let (content, decrypted_1) =
-            decrypt_chacha20_poly1305_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
+            decrypt_chacha20_poly1305_v1(pk1(), &individual_secrets, cyphertext.clone(), nonce)
+                .unwrap();
         assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_1).unwrap(), "test".to_string());
         let (content, decrypted_2) =
-            decrypt_chacha20_poly1305_v1(pk2(), &individual_secrets, cyphertext.clone(), nonce).unwrap();
+            decrypt_chacha20_poly1305_v1(pk2(), &individual_secrets, cyphertext.clone(), nonce)
+                .unwrap();
         assert_eq!(content, Content::Bip380);
         assert_eq!(String::from_utf8(decrypted_2).unwrap(), "test".to_string());
         let decrypted_3 =
@@ -1582,7 +1584,8 @@ mod encryption_vectors {
     use super::*;
     use alloc::{string::String, vec::Vec};
 
-    const TEST_VECTORS_JSON: &str = include_str!("../test_vectors/chacha20poly1305_encryption.json");
+    const TEST_VECTORS_JSON: &str =
+        include_str!("../test_vectors/chacha20poly1305_encryption.json");
 
     #[derive(serde::Deserialize, serde::Serialize)]
     struct TestVector {
@@ -1796,8 +1799,7 @@ mod encrypted_backup {
             {
                 use base64::Engine as _;
                 if let Some(expected_b64) = v.expected_base64.as_deref() {
-                    let computed_b64 =
-                        base64::engine::general_purpose::STANDARD.encode(&encrypted);
+                    let computed_b64 = base64::engine::general_purpose::STANDARD.encode(&encrypted);
                     assert_eq!(
                         computed_b64, expected_b64,
                         "Base64 encoding mismatch: {description}"
@@ -1875,8 +1877,7 @@ mod encrypted_backup {
                 "Version mismatch with trailing bytes: {description}"
             );
 
-            let mut parsed_paths_t =
-                decode_derivation_paths(&with_trailer).expect(description);
+            let mut parsed_paths_t = decode_derivation_paths(&with_trailer).expect(description);
             parsed_paths_t.sort();
             assert_eq!(
                 parsed_paths_t, derivation_paths,
@@ -1899,13 +1900,9 @@ mod encrypted_backup {
             );
 
             for key in &keys {
-                let (decrypted_content, decrypted_plaintext) = decrypt_chacha20_poly1305_v1(
-                    *key,
-                    &is_t,
-                    cyphertext_t.clone(),
-                    nonce_t,
-                )
-                .expect(description);
+                let (decrypted_content, decrypted_plaintext) =
+                    decrypt_chacha20_poly1305_v1(*key, &is_t, cyphertext_t.clone(), nonce_t)
+                        .expect(description);
                 let decrypted_plaintext = String::from_utf8(decrypted_plaintext).unwrap();
                 assert_eq!(
                     decrypted_content, content,

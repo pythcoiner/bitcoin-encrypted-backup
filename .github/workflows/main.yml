@@ -30,7 +30,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.76
+          - 1.82
           - nightly
         os:
           - ubuntu-latest
@@ -49,7 +49,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.76
+          - 1.82
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
