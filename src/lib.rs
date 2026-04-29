@@ -391,6 +391,7 @@ pub enum Error {
     WrongKey,
     DescriptorHasNoKeys,
     Base64,
+    InvalidKeyExpression,
     String(Box<String>),
 }
 
@@ -430,7 +431,7 @@ mod tests {
         assert!(!backp.payload.is_none());
 
         assert!(backp.get_keys().is_empty());
-        let pk1 = dpk_to_pk(&descriptor::tests::dpk_1());
+        let pk1 = dpk_to_pk(&descriptor::tests::dpk_1()).unwrap();
         backp = backp.set_keys(vec![pk1]);
         let pks = backp.get_keys();
         assert_eq!(pks.len(), 1);
@@ -500,7 +501,7 @@ mod tests {
     }
 
     pub fn dummy_encrypted_payload() -> Vec<u8> {
-        let key = dpk_to_pk(&descriptor::tests::dpk_1());
+        let key = dpk_to_pk(&descriptor::tests::dpk_1()).unwrap();
         EncryptedBackup::new()
             .set_payload(&vec![0x00])
             .unwrap()
@@ -533,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_wrong_payload() {
-        let key = dpk_to_pk(&descriptor::tests::dpk_1());
+        let key = dpk_to_pk(&descriptor::tests::dpk_1()).unwrap();
         // No payload
         let fail = EncryptedBackup::new()
             .set_keys(vec![key])
