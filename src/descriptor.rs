@@ -9,11 +9,25 @@ use alloc::{collections::BTreeSet, str::FromStr, vec::Vec};
 
 use miniscript::{
     bitcoin::{self, bip32::DerivationPath, secp256k1},
-    descriptor::{DerivPaths, Wildcard},
+    descriptor::{DerivPaths, SinglePubKey, Wildcard},
     Descriptor, DescriptorPublicKey, ForEachKey,
 };
 
-use crate::Error;
+/// Internal-only x-only normalization used by NUMS detection. Bypasses the
+/// allow/disallow check intentionally so a NUMS literal in tr() is reported
+/// as Warning::NumsKey rather than DisallowedKeyExpression.
+fn xonly_of(key: &DescriptorPublicKey) -> [u8; 32] {
+    match key {
+        DescriptorPublicKey::Single(k) => match k.key {
+            SinglePubKey::FullKey(pk) => pk.inner.x_only_public_key().0.serialize(),
+            SinglePubKey::XOnly(xo) => xo.serialize(),
+        },
+        DescriptorPublicKey::XPub(k) => k.xkey.public_key.x_only_public_key().0.serialize(),
+        DescriptorPublicKey::MultiXPub(k) => k.xkey.public_key.x_only_public_key().0.serialize(),
+    }
+}
+
+use crate::{Error, Warning};
 
 pub fn dpk_to_pk(key: &DescriptorPublicKey) -> Result<bitcoin::secp256k1::PublicKey, Error> {
     let (key, path, wildcard) = match key {
@@ -86,6 +100,25 @@ pub fn descr_to_dpks(
     } else {
         Ok(keys)
     }
+}
+
+/// Walk the descriptor and emit a warning for every key expression that
+/// `descr_to_dpks` sorts out of the encryption-key set: disallowed
+/// expressions (literal pubkey, bare xpub) and the BIP341 NUMS key.
+/// NUMS detection wins over the disallow rule so a NUMS literal in tr()
+/// is reported with the more specific reason.
+pub fn descr_warnings(descriptor: &Descriptor<DescriptorPublicKey>) -> Result<Vec<Warning>, Error> {
+    let nums_xonly = bip341_nums().x_only_public_key().0.serialize();
+    let mut warnings = Vec::new();
+    descriptor.for_each_key(|k| {
+        if xonly_of(k) == nums_xonly {
+            warnings.push(Warning::NumsKey(k.clone()));
+        } else if dpk_to_pk(k).is_err() {
+            warnings.push(Warning::DisallowedKeyExpression(k.clone()));
+        }
+        true
+    });
+    Ok(warnings)
 }
 
 pub fn dpks_to_derivation_keys_paths(

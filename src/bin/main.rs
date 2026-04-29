@@ -134,7 +134,7 @@ async fn main() -> Result<(), CliError> {
                 .map_err(CliError::CantConvertToDescriptor)?;
 
             // encrypt the descriptor
-            let bytes = EncryptedBackup::new()
+            let encrypted = EncryptedBackup::new()
                 .set_payload(&descriptor)
                 .map_err(CliError::FailedToEncrypt)?
                 .encrypt()
@@ -142,7 +142,9 @@ async fn main() -> Result<(), CliError> {
 
             // pass the byte vector to a file
             let mut output = File::create(&output_path).map_err(CliError::CreateError)?;
-            output.write(&bytes).map_err(CliError::WriteError)?;
+            output
+                .write(&encrypted.bytes)
+                .map_err(CliError::WriteError)?;
             println!("descriptor written to {output_path:?}");
         }
         Commands::Decrypt { file, key, output } => {
