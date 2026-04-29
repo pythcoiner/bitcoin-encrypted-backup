@@ -46,6 +46,7 @@ pub enum Warning {
 /// warnings raised while building the encryption-key set.
 #[derive(Debug, Clone)]
 pub struct Encrypted {
+    pub version: Version,
     pub bytes: Vec<u8>,
     pub warnings: Vec<Warning>,
 }
@@ -133,6 +134,13 @@ pub enum Payload {
         individual_secrets: Vec<[u8; 32]>,
         nonce: [u8; 12],
     },
+    /// Raw bytes of a backup produced by bitcoin-encrypted-backup 0.0.2
+    /// (BEB magic, AES-256-GCM). Decryption is delegated to the v0 crate;
+    /// this crate never emits this variant from `encrypt()`.
+    #[cfg(feature = "v0")]
+    DecryptV0 {
+        raw: Vec<u8>,
+    },
 }
 
 impl Payload {
@@ -155,7 +163,7 @@ pub struct EncryptedBackup {
 impl Default for EncryptedBackup {
     fn default() -> Self {
         Self {
-            version: Version::V1,
+            version: Version::Unknown,
             content: Content::Unknown,
             encryption: Encryption::ChaCha20Poly1305,
             derivation_paths: vec![],
@@ -189,10 +197,6 @@ impl EncryptedBackup {
         self.keys = keys;
         self
     }
-    pub fn set_version(mut self, version: Version) -> Self {
-        self.version = version;
-        self
-    }
     pub fn set_content_type(mut self, content_type: Content) -> Self {
         self.content = content_type;
         self
@@ -222,9 +226,11 @@ impl EncryptedBackup {
         &self.warnings
     }
     pub fn encrypt(
-        self,
+        mut self,
         #[cfg(not(feature = "rand"))] nonce: [u8; 12],
     ) -> Result<Encrypted, Error> {
+        // We only encrypt with last version
+        self.version = Version::V1;
         if self.content == Content::Unknown {
             return Err(Error::UnknownContent);
         }
@@ -251,12 +257,19 @@ impl EncryptedBackup {
                     #[cfg(not(feature = "rand"))]
                     nonce,
                 )?;
-                Ok(Encrypted { bytes, warnings })
+                Ok(Encrypted {
+                    version: self.version,
+                    bytes,
+                    warnings,
+                })
             }
             _ => Err(Error::NotImplemented),
         }
     }
-    pub fn set_encrypted_payload(self, bytes: &[u8]) -> Result<Self, Error> {
+    pub fn set_encrypted_payload(
+        #[cfg_attr(not(feature = "v0"), allow(unused_mut))] mut self,
+        bytes: &[u8],
+    ) -> Result<Self, Error> {
         // Auto-detect: the binary BIPXXX blob always starts with the
         // 6-byte ASCII magic "BIPXXX". If the input does not start with
         // that prefix, try decoding it as standard RFC 4648 base64 (the
@@ -264,6 +277,14 @@ impl EncryptedBackup {
         // BIPXXX blob starts with "Qkl..." so the check is unambiguous.
         if bytes.starts_with(ll::MAGIC.as_bytes()) {
             return self.set_encrypted_payload_binary(bytes);
+        }
+        #[cfg(feature = "v0")]
+        if bytes.starts_with(V0_MAGIC) {
+            self.payload = Payload::DecryptV0 {
+                raw: bytes.to_vec(),
+            };
+            self.version = Version::V0;
+            return Ok(self);
         }
         #[cfg(feature = "base64")]
         {
@@ -279,7 +300,15 @@ impl EncryptedBackup {
     }
 
     fn set_encrypted_payload_binary(mut self, bytes: &[u8]) -> Result<Self, Error> {
+        #[cfg(feature = "v0")]
+        if bytes.starts_with(V0_MAGIC) {
+            self.payload = Payload::DecryptV0 {
+                raw: bytes.to_vec(),
+            };
+            return Ok(self);
+        }
         let version: Version = ll::decode_version(bytes).map(|v| v.into())?;
+        self.version = version;
         match version {
             Version::V1 => {
                 let (derivation_paths, individual_secrets, encryption_type, nonce, cyphertext) =
@@ -314,9 +343,16 @@ impl EncryptedBackup {
         if self.keys.is_empty() {
             return Err(Error::NoKey);
         }
+        #[cfg(feature = "v0")]
+        if let Payload::DecryptV0 { raw } = &self.payload {
+            return self.try_v0_decrypt(raw);
+        }
+        match &self.payload {
+            Payload::None | Payload::Encrypt { .. } => return Err(Error::WrongPayload),
+            _ => {}
+        }
         match self.version {
             Version::V1 => match &self.payload {
-                Payload::None | Payload::Encrypt { .. } => Err(Error::WrongPayload),
                 Payload::DecryptV1 {
                     cyphertext,
                     individual_secrets,
@@ -334,12 +370,44 @@ impl EncryptedBackup {
                     }
                     Err(Error::WrongKey)
                 }
+                _ => Err(Error::WrongPayload), // unreachable
             },
             Version::V0 => Err(Error::NotImplemented),
             Version::Unknown => Err(Error::UnknownVersion),
         }
     }
+
+    /// Decrypt a backup produced by bitcoin-encrypted-backup 0.0.2.
+    /// Both crates pin the same miniscript version with identical
+    /// features, so `Descriptor<DescriptorPublicKey>` is the same type
+    /// across the boundary and no re-parsing is needed.
+    #[cfg(feature = "v0")]
+    fn try_v0_decrypt(&self, raw: &[u8]) -> Result<Decrypted, Error> {
+        use bitcoin_encrypted_backup_v0 as v0;
+        let res = v0::EncryptedBackup::new()
+            .set_encrypted_payload(raw)
+            .map_err(|_| Error::WrongPayload)?
+            .set_keys(self.keys.clone())
+            .decrypt()
+            .map_err(|e| match e {
+                v0::Error::NoKey => Error::NoKey,
+                v0::Error::WrongKey => Error::WrongKey,
+                _ => Error::WrongPayload,
+            })?;
+        Ok(match res {
+            v0::Decrypted::Descriptor(d) => Decrypted::Descriptor(d),
+            v0::Decrypted::Policy => Decrypted::Policy,
+            v0::Decrypted::Labels => Decrypted::Labels,
+            v0::Decrypted::WalletBackup(b) => Decrypted::WalletBackup(b),
+            v0::Decrypted::Raw(b) => Decrypted::Raw(b),
+        })
+    }
 }
+
+/// Magic of bitcoin-encrypted-backup 0.0.2 (the published crates.io
+/// release). Hard-coded because the v0 crate keeps it as a private const.
+#[cfg(feature = "v0")]
+const V0_MAGIC: &[u8] = b"BEB";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encryption {
@@ -496,15 +564,10 @@ mod tests {
         backp = backp.set_encryption(Encryption::ChaCha20Poly1305);
         assert_eq!(backp.get_encryption(), Encryption::ChaCha20Poly1305);
 
-        backp = backp.set_version(Version::Unknown);
-        let fail = backp.clone().encrypt().unwrap_err();
-        assert_eq!(fail, Error::InvalidVersion);
-        backp = backp.set_version(Version::V0);
-        assert_eq!(backp.get_version(), Version::V0);
-        backp = backp.set_version(Version::V1);
-        assert_eq!(backp.get_version(), Version::V1);
-
-        let bytes = backp.encrypt().unwrap().bytes;
+        let encrypted = backp.encrypt().unwrap();
+        // We always encrypt with v1
+        assert_eq!(encrypted.version, Version::V1);
+        let bytes = encrypted.bytes;
 
         let fail = EncryptedBackup::new()
             .set_encrypted_payload(&bytes)
@@ -591,18 +654,6 @@ mod tests {
             .decrypt()
             .unwrap_err();
         assert_eq!(fail, Error::WrongPayload);
-
-        let dummy = dummy_encrypted_payload();
-
-        // unknown version
-        let fail = EncryptedBackup::new()
-            .set_keys(vec![key])
-            .set_encrypted_payload(&dummy)
-            .unwrap()
-            .set_version(Version::Unknown)
-            .decrypt()
-            .unwrap_err();
-        assert_eq!(fail, Error::UnknownVersion);
     }
 
     #[test]
@@ -1071,5 +1122,142 @@ mod tests {
             v = i.into();
             assert_eq!(v, Version::Unknown);
         }
+    }
+}
+
+#[cfg(all(test, feature = "rand", feature = "v0"))]
+mod v0_tests {
+    use super::*;
+    use crate::descriptor::dpk_to_pk;
+    use bitcoin_encrypted_backup_v0 as v0;
+    use miniscript::bitcoin;
+
+    // The v0 dep is built with default-features = false, so its
+    // `encrypt(nonce)` signature requires a fixed nonce.
+    const NONCE: [u8; 12] = [42u8; 12];
+
+    fn descriptor_and_key() -> (Descriptor<DescriptorPublicKey>, secp256k1::PublicKey) {
+        let d = descriptor::tests::descr_1();
+        let pk = dpk_to_pk(&descriptor::tests::dpk_1()).unwrap();
+        (d, pk)
+    }
+
+    #[test]
+    fn test_v0_roundtrip_descriptor() {
+        // Encrypt with the published 0.0.2 crate, decrypt via the current
+        // crate's transparent fallback. The two crates share the same
+        // miniscript dep, so the Descriptor type round-trips without
+        // re-parsing.
+        let (descriptor, _) = descriptor_and_key();
+
+        let bytes = v0::EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .encrypt(NONCE)
+            .unwrap();
+
+        // v0 magic check pins the assumption that BEB is the prefix.
+        assert!(bytes.starts_with(V0_MAGIC), "v0 blob should start with BEB");
+
+        let backp = EncryptedBackup::new()
+            .set_encrypted_payload(&bytes)
+            .unwrap();
+        let keys = v0::EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .get_keys();
+        let restored = backp.set_keys(keys).decrypt().unwrap();
+        assert_eq!(restored, Decrypted::Descriptor(descriptor));
+    }
+
+    #[test]
+    fn test_v0_wrong_key_surfaces_wrong_key() {
+        let (descriptor, _) = descriptor_and_key();
+        let bytes = v0::EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .encrypt(NONCE)
+            .unwrap();
+
+        // Unrelated valid pubkey.
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let mut sk = [0u8; 32];
+        sk[31] = 99;
+        let unrelated = bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &bitcoin::secp256k1::SecretKey::from_slice(&sk).unwrap(),
+        );
+
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(&bytes)
+            .unwrap()
+            .set_keys(vec![unrelated])
+            .decrypt()
+            .unwrap_err();
+        assert_eq!(err, Error::WrongKey);
+    }
+
+    #[test]
+    fn test_garbage_returns_error_not_v0_panic() {
+        // Bytes that match neither magic must return the existing parse
+        // error path, not get silently routed to v0.
+        let garbage = b"not-a-backup-of-any-version";
+        let err = EncryptedBackup::new()
+            .set_encrypted_payload(garbage)
+            .unwrap_err();
+        // Either Base64 (auto-detect failed to decode) or Ll (decode_v1
+        // failure if base64 happened to decode); both are acceptable
+        // failures - the point is we don't panic and don't silently
+        // route to v0.
+        assert!(matches!(err, Error::Base64 | Error::Ll(_)));
+    }
+
+    #[cfg(feature = "base64")]
+    #[test]
+    fn test_v0_base64_input() {
+        // base64-wrapped v0 blob: auto-detect must base64-decode first,
+        // then the inner bytes route to v0 via magic.
+        use base64::Engine as _;
+        let (descriptor, _) = descriptor_and_key();
+        let bytes = v0::EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .encrypt(NONCE)
+            .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let keys = v0::EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .get_keys();
+        let restored = EncryptedBackup::new()
+            .set_encrypted_payload(b64.as_bytes())
+            .unwrap()
+            .set_keys(keys)
+            .decrypt()
+            .unwrap();
+        assert_eq!(restored, Decrypted::Descriptor(descriptor));
+    }
+
+    #[test]
+    fn test_encrypt_never_emits_v0() {
+        // Pin "decrypt-only": the current crate must always produce
+        // BIPXXX blobs, never BEB. A future refactor cannot accidentally
+        // re-introduce v0-format output.
+        let descriptor = descriptor::tests::descr_1();
+        let bytes = EncryptedBackup::new()
+            .set_payload(&descriptor)
+            .unwrap()
+            .encrypt()
+            .unwrap()
+            .bytes;
+        assert!(
+            bytes.starts_with(ll::MAGIC.as_bytes()),
+            "current encrypt must emit BIPXXX magic"
+        );
+        assert!(
+            !bytes.starts_with(V0_MAGIC),
+            "current encrypt must not emit BEB magic"
+        );
     }
 }
