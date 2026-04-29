@@ -140,6 +140,19 @@ async fn main() -> Result<(), CliError> {
                 .encrypt()
                 .map_err(CliError::FailedToEncrypt)?;
 
+            for w in &encrypted.warnings {
+                match w {
+                    bitcoin_encrypted_backup::Warning::DisallowedKeyExpression(k) => {
+                        eprintln!(
+                            "warning: disallowed key expression excluded from encryption-key set: {k}; the cosigner holding this key cannot decrypt the backup with their key"
+                        );
+                    }
+                    bitcoin_encrypted_backup::Warning::NumsKey(k) => {
+                        eprintln!("warning: BIP341 NUMS key excluded from encryption-key set: {k}");
+                    }
+                }
+            }
+
             // pass the byte vector to a file
             let mut output = File::create(&output_path).map_err(CliError::CreateError)?;
             output
