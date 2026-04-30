@@ -13,6 +13,10 @@ chacha20poly1305 = {version = "0.10.1", default-features = false, features = ["a
 rand = {version = "0.9.2", optional = true}
 base64 = {version = "0.22", default-features = false, features = ["alloc"], optional = true}
 
+# Old format (BEB magic, AES-256-GCM): used solely on the decrypt path
+# as a transparent fallback for backups produced by 0.0.2.
+bitcoin-encrypted-backup-v0 = { version = "0.0.2", package = "bitcoin-encrypted-backup", default-features = false, optional = true }
+
 #miniscript
 mscript_12_3_5 = { version = "12.3.5", default-features = false, features = ["serde", "no-std"], package = "miniscript" , optional = true}
 mscript_12_0 = { version = "12.0", default-features = false, features = ["serde", "no-std"], package = "miniscript" , optional = true}
@@ -36,12 +40,13 @@ path = "src/bin/main.rs"
 required-features = ["cli"]
 
 [features]
-default = ["miniscript_latest", "rand", "base64"]
+default = ["miniscript_latest", "rand", "base64", "v0"]
 rand = ["dep:rand"]
 base64 = ["dep:base64"]
+v0 = ["dep:bitcoin-encrypted-backup-v0"]
 miniscript_latest = ["miniscript_12_3_5"]
-miniscript_12_3_5 = ["mscript_12_3_5"]
-miniscript_12_0 = ["mscript_12_0"]
+miniscript_12_3_5 = ["mscript_12_3_5", "bitcoin-encrypted-backup-v0?/miniscript_12_3_5"]
+miniscript_12_0 = ["mscript_12_0", "bitcoin-encrypted-backup-v0?/miniscript_12_0"]
 tokio = ["dep:tokio"]
 devices = ["dep:async-hwi", "tokio"]
 cli = ["dep:clap", "tokio", "miniscript_latest", "rand"]

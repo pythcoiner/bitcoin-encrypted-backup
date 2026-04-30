@@ -220,7 +220,15 @@ pub fn decryption_secret(keys: &[[u8; XONLY_KEY_SIZE]]) -> sha256::Hash {
 
 pub fn individual_secret(secret: &sha256::Hash, key: &[u8; XONLY_KEY_SIZE]) -> [u8; 32] {
     let si = tagged_hash(INDIVIDUAL_SECRET.as_bytes(), key);
-    xor(secret.as_byte_array(), si.as_byte_array())
+    let ci = xor(secret.as_byte_array(), si.as_byte_array());
+    // Sanity harness: distinct domain-separation tags make c_i = 0
+    // statistically impossible, so seeing it means secret derivation is
+    // misconfigured (e.g. same tag for s and s_i).
+    assert_ne!(
+        ci, [0u8; 32],
+        "c_i collapsed to zero, secret derivation is broken"
+    );
+    ci
 }
 
 pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; XONLY_KEY_SIZE]]) -> Vec<[u8; 32]> {
@@ -1128,25 +1136,26 @@ mod tests {
 
     #[test]
     fn test_encode_decode_individual_secrets() {
-        let secrets = vec![[0; 32], [1; 32]];
+        let secrets = vec![[2; 32], [1; 32]];
         let bytes = encode_individual_secrets(&secrets).unwrap();
         let expected = vec![
-            2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1,
+            2u8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 2, 2, 2, 2, 2,
         ];
         assert_eq!(expected, bytes);
         let (_, decoded) = parse_individual_secrets(&bytes).unwrap();
-        assert_eq!(secrets, decoded);
+        // BTreeSet sorts by value, so the encoded order is [1; 32], [2; 32].
+        assert_eq!(vec![[1; 32], [2; 32]], decoded);
     }
 
     #[test]
     fn test_encode_individual_secrets_no_duplicates() {
-        let secrets = vec![[0; 32], [0; 32]];
+        let secrets = vec![[7; 32], [7; 32]];
         let bytes = encode_individual_secrets(&secrets).unwrap();
         let expected = vec![
-            1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0,
+            1u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7,
         ];
         assert_eq!(expected, bytes);
     }
