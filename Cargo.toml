@@ -3,10 +3,13 @@ name = "bitcoin-encrypted-backup"
 version = "1.0.0"
 edition = "2021"
 readme = "README.md"
-description = "Bitcoin Encrypted Backup"
+description = "Bitcoin Encrypted Backup (deprecated, superseded by bip138)"
 documentation = "https://docs.rs/bitcoin-encrypted-backup"
 license-file = "LICENSE"
 repository = "https://github.com/pythcoiner/bitcoin-encrypted-backup"
+
+[badges]
+maintenance = { status = "deprecated" }
 
 [dependencies]
 chacha20poly1305 = {version = "0.10.1", default-features = false, features = ["alloc"]}

@@ -1,3 +1,11 @@
+> [!WARNING]
+> This crate is deprecated. The spec has evolved into
+> [BIP138](https://github.com/bitcoin/bips/blob/346008db8943cb90c1e091eaac8277066d4dbee7/bip-0138.md), implemented by the
+> [`bip138`](https://crates.io/crates/bip138) crate.
+>
+> This crate must only be used for backward compatibility, to decrypt existing backups. No new
+> backup should be exported with this format. The encryption API is deprecated.
+
 Command-line tool & Rust crate that lets you **encrypt descriptors (or arbitrary
 data)** with a set of **public** keys (or xpubs) and later decrypt when **at least
 one** of them is physically present—either via a local file containing the key or
@@ -54,7 +62,7 @@ Options:
 ```
 ## Library usage
 
-### Encryption
+### Encryption (deprecated)
 ```rust
 let descriptor = Descriptor::<DescriptorPublicKey>::from_str("<descriptor
 string>").unwrap();
