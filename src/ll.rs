@@ -237,6 +237,8 @@ pub fn individual_secrets(secret: &sha256::Hash, keys: &[[u8; XONLY_KEY_SIZE]]) 
         .collect::<Vec<_>>()
 }
 
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
+#[allow(deprecated)]
 pub fn inner_encrypt(
     secret: sha256::Hash,
     data: Vec<u8>,
@@ -248,6 +250,7 @@ pub fn inner_encrypt(
     encrypt_with_nonce(secret, data, nonce)
 }
 
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encrypt_with_nonce(
     secret: sha256::Hash,
     mut data: Vec<u8>,
@@ -274,6 +277,7 @@ pub fn encrypt_with_nonce(
 
 /// Encode following this format:
 /// <LENGTH><DERIVATION_PATH_1><DERIVATION_PATH_2><..><DERIVATION_PATH_N>
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encode_derivation_paths(derivation_paths: Vec<DerivationPath>) -> Result<Vec<u8>, Error> {
     if derivation_paths.len() > u8::MAX as usize {
         return Err(Error::DerivPathLength);
@@ -295,6 +299,7 @@ pub fn encode_derivation_paths(derivation_paths: Vec<DerivationPath>) -> Result<
 
 /// Encode following this format:
 /// <LENGTH><INDIVIDUAL_SECRET_1><INDIVIDUAL_SECRET_2><..><INDIVIDUAL_SECRET_N>
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encode_individual_secrets(individual_secrets: &[[u8; 32]]) -> Result<Vec<u8>, Error> {
     let individual_secrets: BTreeSet<_> = individual_secrets.iter().collect();
     if individual_secrets.len() > u8::MAX as usize {
@@ -313,6 +318,7 @@ pub fn encode_individual_secrets(individual_secrets: &[[u8; 32]]) -> Result<Vec<
 
 /// Encode following this format:
 /// <NONCE><LENGTH><CYPHERTEXT>
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encode_encrypted_payload(nonce: [u8; 12], cyphertext: &[u8]) -> Result<Vec<u8>, Error> {
     if cyphertext.is_empty() {
         return Err(Error::CypherTextEmpty);
@@ -330,6 +336,7 @@ pub fn encode_encrypted_payload(nonce: [u8; 12], cyphertext: &[u8]) -> Result<Ve
 /// <MAGIC><VERSION><DERIVATION_PATHS><INDIVIDUAL_SECRETS><ENCRYPTION><ENCRYPTED_PAYLOAD>
 /// NOTE: payload that will fail to decode can be encoded with this function, for instance with an
 /// invalid version, the inputs args must be sanitized by the caller.
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encode_v1(
     version: u8,
     mut derivation_paths: Vec<u8>,
@@ -447,6 +454,7 @@ pub fn decode_v1(
     ))
 }
 
+#[allow(deprecated)]
 fn encrypt_chacha20_poly1305_v1_with_nonce(
     derivation_paths: Vec<DerivationPath>,
     content_metadata: Content,
@@ -519,6 +527,7 @@ fn encrypt_chacha20_poly1305_v1_with_nonce(
     ))
 }
 
+#[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
 pub fn encrypt_chacha20_poly1305_v1(
     derivation_paths: Vec<DerivationPath>,
     content_metadata: Content,
@@ -711,6 +720,7 @@ fn parse_varint(bytes: &[u8]) -> Option<(VarInt, usize)> {
 }
 
 #[cfg(all(test, feature = "rand"))]
+#[allow(deprecated)]
 mod tests {
     use alloc::string::{String, ToString};
     use core::str::FromStr;
@@ -1341,6 +1351,7 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "rand"))]
+#[allow(deprecated)]
 mod derivation_paths {
     use super::*;
     use alloc::{string::String, vec::Vec};
@@ -1396,6 +1407,7 @@ mod derivation_paths {
 }
 
 #[cfg(all(test, feature = "rand"))]
+#[allow(deprecated)]
 mod individual_secrets_vectors {
     use super::*;
     use alloc::{string::String, vec::Vec};
@@ -1589,6 +1601,7 @@ mod encryption_secret {
 }
 
 #[cfg(all(test, feature = "rand"))]
+#[allow(deprecated)]
 mod encryption_vectors {
     use super::*;
     use alloc::{string::String, vec::Vec};

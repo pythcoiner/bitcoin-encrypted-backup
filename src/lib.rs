@@ -228,6 +228,8 @@ impl EncryptedBackup {
     pub fn get_warnings(&self) -> &[Warning] {
         &self.warnings
     }
+    #[deprecated(note = "superseded by bip138, only decryption of existing backups is supported")]
+    #[allow(deprecated)]
     pub fn encrypt(
         self,
         #[cfg(not(feature = "rand"))] nonce: [u8; 12],
@@ -503,6 +505,7 @@ impl From<ll::Error> for Error {
 }
 
 #[cfg(all(test, feature = "rand"))]
+#[allow(deprecated)]
 mod tests {
     use miniscript::bitcoin;
 
@@ -1136,6 +1139,7 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "rand", feature = "v0"))]
+#[allow(deprecated)]
 mod v0_tests {
     use super::*;
     use crate::descriptor::dpk_to_pk;

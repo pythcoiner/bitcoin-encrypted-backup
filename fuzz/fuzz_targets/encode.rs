@@ -1,4 +1,5 @@
 #![no_main]
+#![allow(deprecated)]
 
 extern crate bitcoin_encrypted_backup;
 use bitcoin_encrypted_backup::{
