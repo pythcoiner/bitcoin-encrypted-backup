@@ -1,6 +1,6 @@
 [package]
 name = "bitcoin-encrypted-backup"
-version = "1.0.0"
+version = "0.0.3"
 edition = "2021"
 readme = "README.md"
 description = "Bitcoin Encrypted Backup (deprecated, superseded by bip138)"
