@@ -32,25 +32,12 @@ $ beb --help
 Usage: beb <COMMAND>
 
 Commands:
-  encrypt  Encrypt some descriptor
   decrypt  Decrypt an encrypted descriptor with a given xpub
   help     Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
-```
-```
-$ beb encrypt --help
-Encrypt some descriptor
-
-Usage: beb encrypt [OPTIONS]
-
-Options:
-  -f, --file <FILE>      Input file containing the descriptor
-  -o, --output <OUTPUT>  Optional output to encrypted descriptor
-  -h, --help             Print help
-
 ```
 ```
 $ beb decrypt --help
